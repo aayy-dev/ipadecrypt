@@ -1,0 +1,18 @@
+Package: dev.rtrdd.ipadecrypt-cli
+Status: install ok installed
+Priority: optional
+Section: Utilities
+Maintainer: U-rTrDD-fyi <275768457+U-rTrDD-fyi@users.noreply.github.com>
+Architecture: iphoneos-arm64
+Version: 1.0.0
+Depends: firmware (>= 15.0), bash, unzip, odcctools
+Description: CLI ipa decryption tool
+ On-device IPA decryptor for jailbroken iOS. Dumps decrypted Mach-O
+ images (main executable, frameworks, and appex plug-ins) from an
+ installed app and repackages them into a plaintext .ipa.
+Name: ipadecrypt-cli
+Author: U-rTrDD-fyi <275768457+U-rTrDD-fyi@users.noreply.github.com>
+Homepage: https://github.com/U-rTrDD-fyi
+Icon: https://rtrdd.github.io/icons/ipadecrypt-cli.png
+SileoDepiction: https://rtrdd.github.io/depictions/ipadecrypt-cli.json
+Depiction: https://rtrdd.github.io/depictions/ipadecrypt-cli.html

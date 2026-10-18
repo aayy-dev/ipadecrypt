@@ -1,0 +1,149 @@
+#!/var/jb/usr/bin/bash
+# decrypt — self-contained convenience wrapper around ipadecrypt
+#
+# Usage:
+#   decrypt [-v] [--skip-appex] [--scan] <bundle-id> <output-dir>
+#
+# 1. Resolves the installed .app from a CFBundleIdentifier (built in).
+# 2. Runs: ipadecrypt decrypt <bundle-id> <app-path> <out>/<App>_decrypted.ipa
+# 3. With --scan, otool-checks every binary in the result for cryptid 1/0.
+#
+# Ships alongside the `ipadecrypt` binary in /var/jb/usr/local/bin — no other
+# helper scripts required.
+
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+IPADECRYPT_BIN="${IPADECRYPT_BIN:-$SELF_DIR/ipadecrypt}"
+
+usage() {
+    echo "usage: $(basename "$0") [-v] [--skip-appex] [--scan] <bundle-id> <output-dir>" >&2
+}
+
+# --- helper: read CFBundleIdentifier from a plist ---------------------------
+# Different plutil builds use different CLI grammars (Apple's vs third-party
+# clones on some jailbreaks), so try each and use the first that yields a value.
+plist_bundle_id() {
+    local plist="$1" id=""
+    id=$(plutil -extract CFBundleIdentifier raw -o - "$plist" 2>/dev/null) || true
+    [[ -n "$id" ]] || id=$(plutil -key CFBundleIdentifier "$plist" 2>/dev/null) || true
+    [[ -n "$id" ]] || id=$(defaults read "$plist" CFBundleIdentifier 2>/dev/null) || true
+    [[ -n "$id" ]] || id=$(grep -a -A1 'CFBundleIdentifier' "$plist" 2>/dev/null \
+        | grep -o '<string>.*</string>' \
+        | sed 's/<string>\(.*\)<\/string>/\1/' | head -n1) || true
+    printf '%s' "$id"
+}
+
+# --- helper: resolve installed .app path from a bundle id -------------------
+find_app() {
+    local target="$1" dir app_path id
+    for dir in /private/var/containers/Bundle/Application; do
+        [[ -d "$dir" ]] || continue
+        while IFS= read -r app_path; do
+            [[ -f "$app_path/Info.plist" ]] || continue
+            id="$(plist_bundle_id "$app_path/Info.plist")"
+            if [[ "$id" == "$target" ]]; then
+                printf '%s' "$app_path"
+                return 0
+            fi
+        done < <(find "$dir" -name '*.app' -type d 2>/dev/null)
+    done
+    return 1
+}
+
+# --- helper: cryptid scan of a finished IPA --------------------------------
+scan_ipa() {
+    local ipa="$1" tmp logfile rel cinfo had_locked=0
+    tmp="$(mktemp -d /tmp/ipascan.XXXXXX)"
+    logfile="${ipa%.*}_SCAN.txt"
+
+    echo "⚡️ Extracting IPA for scan..."
+    unzip -qo "$ipa" -d "$tmp" >/dev/null 2>&1 || true
+    chmod -R 755 "$tmp" 2>/dev/null || true
+
+    {
+        echo "SCAN REPORT: $(basename "$ipa")"
+        echo "Time: $(date)"
+        echo "--------------------------------------"
+    } > "$logfile"
+
+    echo "🔍 Scanning binaries..."
+    # Match files with no extension (main/appex/framework execs) or .dylib.
+    while IFS= read -r f; do
+        cinfo="$(otool -l "$f" 2>/dev/null | grep cryptid || true)"
+        [[ -n "$cinfo" ]] || continue
+        rel="${f#$tmp/}"
+        case "$cinfo" in
+            *"cryptid 1"*)
+                echo "🔴 [LOCKED] $rel"; echo "🔴 [LOCKED] $rel" >> "$logfile"
+                had_locked=1 ;;
+            *"cryptid 0"*)
+                echo "🟢 [OPEN]   $rel"; echo "🟢 [OPEN]   $rel" >> "$logfile" ;;
+            *)
+                echo "⚪️ [N/A]    $rel" >> "$logfile" ;;
+        esac
+    done < <(find "$tmp" -type f \( ! -name "*.*" -o -name "*.dylib" \) 2>/dev/null)
+
+    echo "--------------------------------------" >> "$logfile"
+    rm -rf "$tmp"
+
+    if [[ "$had_locked" -eq 1 ]]; then
+        echo "❌ Encrypted binaries remain. See $(basename "$logfile")"
+        return 1
+    fi
+    echo "✅ All clean."
+    echo "📄 Log saved: $(basename "$logfile")"
+    return 0
+}
+
+# --- parse args -------------------------------------------------------------
+# -v is GLOBAL (before subcommand); --skip-appex is a DECRYPT flag (after it).
+GLOBAL_FLAGS=()
+DECRYPT_FLAGS=()
+DO_SCAN=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -v|--verbose) GLOBAL_FLAGS+=("-v"); shift ;;
+        --skip-appex) DECRYPT_FLAGS+=("--skip-appex"); shift ;;
+        --scan)       DO_SCAN=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        --)           shift; break ;;
+        -*)           echo "[ERROR] unknown flag: $1" >&2; usage; exit 1 ;;
+        *)            break ;;
+    esac
+done
+
+BUNDLE_ID="${1:-}"
+OUT_DIR="${2:-}"
+[[ -n "$BUNDLE_ID" && -n "$OUT_DIR" ]] || { usage; exit 1; }
+[[ -x "$IPADECRYPT_BIN" ]] || { echo "[ERROR] ipadecrypt not found/executable at: $IPADECRYPT_BIN" >&2; exit 1; }
+
+# --- resolve + decrypt ------------------------------------------------------
+APP_PATH="$(find_app "$BUNDLE_ID" || true)"
+[[ -n "$APP_PATH" ]] || { echo "[ERROR] no installed app found for bundle id: $BUNDLE_ID" >&2; exit 1; }
+[[ -d "$APP_PATH" ]] || { echo "[ERROR] resolved path is not a directory: $APP_PATH" >&2; exit 1; }
+
+APP_NAME="$(basename "$APP_PATH" .app)"
+mkdir -p "$OUT_DIR"
+OUT_DIR="${OUT_DIR%/}"
+OUT_IPA="$OUT_DIR/${APP_NAME}_decrypted.ipa"
+
+echo "==> bundle id : $BUNDLE_ID"
+echo "==> app path  : $APP_PATH"
+echo "==> output    : $OUT_IPA"
+echo
+
+if ! "$IPADECRYPT_BIN" \
+        ${GLOBAL_FLAGS[@]+"${GLOBAL_FLAGS[@]}"} \
+        decrypt \
+        ${DECRYPT_FLAGS[@]+"${DECRYPT_FLAGS[@]}"} \
+        "$BUNDLE_ID" "$APP_PATH" "$OUT_IPA"; then
+    echo "[ERROR] ipadecrypt failed" >&2
+    exit 1
+fi
+
+# --- optional scan ----------------------------------------------------------
+if [[ "$DO_SCAN" -eq 1 ]]; then
+    echo
+    scan_ipa "$OUT_IPA" || exit 2
+fi

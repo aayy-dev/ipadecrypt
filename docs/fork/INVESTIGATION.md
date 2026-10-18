@@ -229,23 +229,64 @@ the user's go-ahead. Repeated failed logins can lock an account.
    - look for `AMSMescal*` classes, a possible way to use the device's own
      signer instead of emulation.
 
-## Open decisions
+## Decisions (2026-10-18)
 
-1. **The sign-in approach.** Import ipatool v2.7.0's `pkg/appstore` for login
-   (recommended: least code to maintain), or vendor its `internal/sap`.
-2. **iDecrypt.** Fold in its *features*, reimplemented in `helper/`, since its
-   code is unlicensed TrollDecrypt. And is TrollStore support in scope?
-3. **The new fork's package ID and name**, to stop colliding with korboy's and
-   R0GUEEE's `com.korboy.ipadecrypt`.
-4. **`aayy-dev/korboy-ipadecrypt`.** It's exactly korboy's v0.7.0-korboy.1 tree
-   (`bd9bf91`) minus `.github/` and the executable bits, with nothing of the
-   user's own. Delete it, or keep it?
+1. **Sign-in:** import ipatool v2.7.0's `pkg/appstore` as a library, pinned to
+   v2.7.0, for the bag, login and SAP. Keep ipadecrypt's own download code
+   (plus the serialNumber/5002 fixes).
+2. **iDecrypt / CLI:** the user has no preference as long as it works the same;
+   the easiest option to build and maintain wins. It turns out the CLI the user
+   actually runs is the installed package `dev.rtrdd.ipadecrypt-cli` 1.0.0, not
+   iDecrypt:
+   - `/var/jb/usr/local/bin/ipadecrypt` is ipadecrypt's own C helper (it reports
+     `ipadecrypt-helper (dev)`, with the same usage text as `helper/args.c`).
+   - `decrypt [-v] [--skip-appex] [--scan] <bundle-id> <output-dir>` is a
+     bash wrapper that finds the installed app and writes
+     `<out>/<App>_decrypted.ipa`; `--scan` checks cryptid with otool.
+   - Copies are in `reference/dev.rtrdd.ipadecrypt-cli-1.0.0/`.
+   - aayy-dev/tele-bot-ipa calls `trolldecryptjb "<bundle-id>" "<output-dir>"`
+     over SSH (path set by `TROLLDECRYPTJB_PATH`).
+
+   **Plan:** ship the fork's helper, the `decrypt` wrapper and a `trolldecryptjb`
+   alias in the one package. No TrollDecrypt code is copied (it's unlicensed),
+   and there's no TrollStore target.
+3. **Package ID:** `dev.aayy.ipadecrypt`. It should Conflict with and Replace
+   `com.korboy.ipadecrypt`, `com.korboy.ipadecrypt-app`,
+   `com.korboy.ipadecryptautoalert`, `dev.rtrdd.ipadecrypt-cli`,
+   `dev.rtrdd.idecrypt` and `com.34306.trolldecryptjb`.
+4. **Repos:** aayy-dev/korboy-ipadecrypt was deleted (a bundle backup is in
+   `~/Git/backups/`). The public fork aayy-dev/ipadecrypt is created; push only
+   after device testing.
+
+## On-device findings (2026-10-18)
+
+**The root cause is confirmed on the device.**
+`/var/mobile/Documents/ipadecrypt/logs/app.log` shows the user's earlier
+sign-ins rejected exactly as predicted:
+- `login: decode plist: … unexpected hex digit 'h' …` with `response
+  status=404` or `500` and an Apple HTML error page;
+- `login failed` (the empty 403/204 case);
+- before that, `auth code required` (2FA).
+
+**Other findings:**
+- **The StoreKit fallback also failed**, for YouTube: `storekit error: Redownload
+  Unavailable with This Apple Account`. To look into: probably an account
+  mismatch between the device's App Store and the app's purchase.
+- **Device:** iPhone15,3 (arm64e/A16), iOS 16.5.1, Dopamine rootless.
+- **Installed:** com.korboy.ipadecrypt 0.7.3-korboy.2, AppSync Unified 116.0,
+  ellekit 1.2, Filza, uikittools, ldid, and dev.rtrdd.ipadecrypt-cli 1.0.0.
+  There's no autoalert package.
+- **Frida's view of the MAC:** its device parameters show a real Wi-Fi MAC; what
+  the helper sees as root through `net.Interfaces()` still needs checking.
+  `ifconfig` isn't installed.
+- **Frida gotcha:** super-trouper's `session_eval` hangs in this app, because
+  frida-swift-bridge crashes on arm64e. Use `script_create` with `bridges:
+  ["objc"]` instead.
 
 ## Local setup
 
-- `~/Git/ipadecrypt`: a clone of korboy. Its remotes `londek`, `r0gueee` and
-  `mysnapshot` all have push disabled. The work branch is `aayy/work`.
+- `~/Git/ipadecrypt`: `origin` is the fork aayy-dev/ipadecrypt. `korboy`,
+  `londek` and `r0gueee` are fetch-only remotes. The work branch is `aayy/work`.
 - `~/Git/iDecrypt`: a clone of aayy-dev/iDecrypt.
 - `~/Git/ipatool`: aayy-dev/ipatool. Tag `v2.7.0` is the sign-in reference.
-- Once tested, publish as a real public fork of korboybeats/ipadecrypt; it will
-  default to `aayy-dev/ipadecrypt`.
+- Push to aayy-dev/ipadecrypt (already forked) once tested on the device.
