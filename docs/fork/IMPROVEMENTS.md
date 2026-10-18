@@ -277,3 +277,35 @@ unencrypted header and safe to rewrite. Then SpringBoard should launch the app,
 the SBS path's dyld-patch decrypt should run, and all images should dump.
 Confirm by re-running the Frida SBS trace (process should appear) and scanning
 the output (0 encrypted).
+
+## Update: min-OS patch tested, did NOT fix it (2026-10-18)
+
+Implemented Mach-O LC_BUILD_VERSION/LC_VERSION_MIN patching (main exec + all
+nested Mach-Os) and tested it on YouTube (min iOS 17) on this device:
+- The patcher works (verified: 7 binaries lowered to 16.5.1, platform field
+  preserved, unit-tested).
+- But after installing the patched IPA, **SpringBoard still returns success
+  from SBSLaunchApplicationWithIdentifier and spawns no usable process** --
+  the helper still falls to the ptrace path and decrypts 1/8.
+- So the Mach-O min-OS is NOT the gate (or not the only one). Reverted the
+  patch (commit abe5073, reverted by 1f42e46) because it rewrites the binary,
+  which can invalidate the code signature, and it provided no benefit.
+
+Deeper findings to pursue:
+- idevicesyslog during the attempt shows the spawned target "flagged as
+  pending exit for reason: launch failed" then immediate exit -- the app never
+  runs, so its __TEXT never gets FairPlay-decrypted in memory.
+- The helper's ptrace fallback is structurally broken here: it calls
+  `vm_read` at the SAME fixed address (0x104768000) for every target process,
+  not each image's real base, so it always fails KERN_INVALID_ADDRESS. That
+  path can only ever return the main image if it happens to be mapped (it got
+  IntentsExtension once, nothing else).
+- Full decrypt requires actually RUNNING the app (so the kernel decrypts its
+  pages). The SBS-launch path is the only one that runs+patches the app, and
+  it is refused for these apps on this A16 / iOS 16.5.1 device.
+
+Open question for the user: has a FULL decrypt of a higher-iOS app ever
+succeeded on THIS device, and with which tool? aayy-dev/TrollDecryptJB-rootless
+and aayy-dev/iDecrypt launch via launchd/RunningBoard rather than SBS+ptrace;
+if that mechanism works here, it should replace the helper's launch strategy.
+
