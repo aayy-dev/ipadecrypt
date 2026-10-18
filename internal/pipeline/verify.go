@@ -17,13 +17,14 @@ type VerifyMismatch struct {
 }
 
 type VerifyResult struct {
-	Scanned        int              // Mach-Os parsed in output IPA
-	Compared       int              // additionally byte-checked against source
-	StillEncrypted []string         // cryptid != 0 (decrypt didn't write through)
-	AllZeroCrypt   []string         // cryptid == 0 but crypt region all zeros (decrypt-on-fault never fired)
-	Mismatches     []VerifyMismatch // bytes outside crypt region differ from source
-	Missing        []string         // output entry has no source counterpart (only when source given)
-	Skipped        []string         // output Mach-O failed to parse
+	Scanned         int              // Mach-Os parsed in output IPA
+	Compared        int              // additionally byte-checked against source
+	StillEncrypted  []string         // cryptid != 0 (decrypt didn't write through)
+	RequiresNewerOS []VerifyMismatch // encrypted, but built for a newer iOS than this device can run (can't be decrypted here)
+	AllZeroCrypt    []string         // cryptid == 0 but crypt region all zeros (decrypt-on-fault never fired)
+	Mismatches      []VerifyMismatch // bytes outside crypt region differ from source
+	Missing         []string         // output entry has no source counterpart (only when source given)
+	Skipped         []string         // output Mach-O failed to parse
 }
 
 func (r VerifyResult) OK() bool {
@@ -43,8 +44,10 @@ func (r VerifyResult) OK() bool {
 //
 // Output is THIN - helper drops fat siblings - so each output entry
 // maps to one specific slice in a (possibly fat) source.
-func Verify(outputIPA, sourceIPA string, skipAppex bool) (VerifyResult, error) {
+func Verify(outputIPA, sourceIPA, deviceOS string, skipAppex bool) (VerifyResult, error) {
 	var res VerifyResult
+
+	devVer := macho.EncodeOSVersion(deviceOS)
 
 	out, err := zip.OpenReader(outputIPA)
 	if err != nil {
@@ -94,6 +97,20 @@ func Verify(outputIPA, sourceIPA string, skipAppex bool) (VerifyResult, error) {
 		}
 
 		if encrypted {
+			// A binary built for a newer iOS than this device can't be run,
+			// so FairPlay never decrypts it here. That's an expected skip,
+			// not a decrypt failure.
+			if devVer != 0 {
+				if minOS, ok := macho.SliceMinOS(outData); ok && minOS > devVer {
+					res.RequiresNewerOS = append(res.RequiresNewerOS, VerifyMismatch{
+						Name:   of.Name,
+						Reason: "requires iOS " + formatOSVersion(minOS),
+					})
+
+					continue
+				}
+			}
+
 			res.StillEncrypted = append(res.StillEncrypted, of.Name)
 			continue
 		}
@@ -298,4 +315,15 @@ func isAllZero(b []byte) bool {
 	}
 
 	return true
+}
+
+// formatOSVersion turns a packed 0xMMMMmmpp Mach-O version into "16.5" / "26.1.0".
+func formatOSVersion(v uint32) string {
+	major := v >> 16
+	minor := (v >> 8) & 0xff
+	patch := v & 0xff
+	if patch != 0 {
+		return fmt.Sprintf("%d.%d.%d", major, minor, patch)
+	}
+	return fmt.Sprintf("%d.%d", major, minor)
 }

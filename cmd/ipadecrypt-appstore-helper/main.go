@@ -712,7 +712,7 @@ func boolString(v bool) string {
 func verifyCryptid(ipa string) error {
 	emit("event", "verify", "phase", "begin")
 
-	res, err := pipeline.Verify(ipa, "", false)
+	res, err := pipeline.Verify(ipa, "", deviceOSVersion(), false)
 	if err != nil {
 		return err
 	}
@@ -720,10 +720,16 @@ func verifyCryptid(ipa string) error {
 	emit("event", "verify", "phase", "scanned",
 		"scanned", strconv.Itoa(res.Scanned),
 		"encrypted", strconv.Itoa(len(res.StillEncrypted)),
+		"requiresNewerOS", strconv.Itoa(len(res.RequiresNewerOS)),
 		"skipped", strconv.Itoa(len(res.Skipped)))
 
 	for _, name := range res.StillEncrypted {
 		emit("event", "verify", "phase", "encrypted", "name", name)
+	}
+	for _, m := range res.RequiresNewerOS {
+		// Built for a newer iOS than this device can run; it can't be
+		// decrypted here and can't run here either. Report, don't fail.
+		emit("event", "verify", "phase", "skipped-newer-os", "name", m.Name, "detail", m.Reason)
 	}
 	for _, name := range res.Skipped {
 		emit("event", "verify", "phase", "skipped", "name", name)
@@ -735,6 +741,24 @@ func verifyCryptid(ipa string) error {
 
 	emit("event", "verify", "phase", "done")
 	return nil
+}
+
+// deviceOSVersion returns this device's iOS version (e.g. "16.5.1"), or "" if
+// it can't be read.
+func deviceOSVersion() string {
+	data, err := os.ReadFile("/System/Library/CoreServices/SystemVersion.plist")
+	if err != nil {
+		return ""
+	}
+
+	var sv struct {
+		ProductVersion string `plist:"ProductVersion"`
+	}
+	if _, err := plist.Unmarshal(data, &sv); err != nil {
+		return ""
+	}
+
+	return sv.ProductVersion
 }
 
 func runDecryptHelper(helper, bundleID, bundlePath, outIPA string) error {

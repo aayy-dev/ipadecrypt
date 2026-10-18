@@ -983,12 +983,21 @@ func runDecryptOnBundle(dev *device.Client, cleanups *cleanupStack, helperPath, 
 			live.Spin("verifying Mach-Os (cryptid, zero-fill)")
 		}
 
-		res, err := pipeline.Verify(outLocal, src, decryptSkipAppex)
+		deviceOS := ""
+		if pr, perr := dev.Probe(); perr == nil {
+			deviceOS = pr.IOSVersion
+		}
+
+		res, err := pipeline.Verify(outLocal, src, deviceOS, decryptSkipAppex)
 		if err != nil {
 			live.Fail("verify failed: %v", err)
 			return
 		}
-		live.Note("verify: scanned=%d encrypted=%d skipped=%d", res.Scanned, len(res.StillEncrypted), len(res.Skipped))
+		live.Note("verify: scanned=%d encrypted=%d requires-newer-os=%d skipped=%d", res.Scanned, len(res.StillEncrypted), len(res.RequiresNewerOS), len(res.Skipped))
+
+		for _, m := range res.RequiresNewerOS {
+			tui.Info("  %s skipped (%s) — can't run or decrypt on this iOS", m.Name, m.Reason)
+		}
 
 		if !res.OK() {
 			live.Fail("verify failed: %s", verifyFailureSummary(res))

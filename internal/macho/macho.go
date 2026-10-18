@@ -350,3 +350,158 @@ func pickFatSlice(data []byte, is64 bool, cpu, sub uint32) ([]byte, error) {
 
 	return nil, fmt.Errorf("no fat slice matched cputype=0x%x cpusubtype=0x%x", cpu, sub)
 }
+
+// LC_BUILD_VERSION / LC_VERSION_MIN_IPHONEOS carry the binary's minimum OS.
+const (
+	lcVersionMinIPhoneOS = 0x25
+	lcBuildVersion       = 0x32
+)
+
+// SliceMinOS returns the highest minimum-OS (packed 0xMMMMmmpp, e.g. 17.0 =
+// 0x110000) declared by any slice of a thin or fat Mach-O, and whether one was
+// found. It reads LC_BUILD_VERSION.minos and LC_VERSION_MIN_IPHONEOS.version.
+// A parse problem yields (0, false) so callers treat it as "unknown".
+func SliceMinOS(data []byte) (uint32, bool) {
+	if len(data) < 8 {
+		return 0, false
+	}
+
+	switch binary.BigEndian.Uint32(data[0:4]) {
+	case FatMagic, FatMagic64:
+		is64 := binary.BigEndian.Uint32(data[0:4]) == FatMagic64
+		return fatMinOS(data, is64)
+	}
+
+	switch binary.LittleEndian.Uint32(data[0:4]) {
+	case MagicLE, Magic64LE:
+		return thinMinOS(data, false)
+	case MagicBE, Magic64BE:
+		return thinMinOS(data, true)
+	}
+
+	return 0, false
+}
+
+func fatMinOS(data []byte, is64 bool) (uint32, bool) {
+	bo := binary.BigEndian
+	nfat := bo.Uint32(data[4:8])
+	if nfat == 0 || nfat > 32 {
+		return 0, false
+	}
+
+	archSize := 20
+	if is64 {
+		archSize = 32
+	}
+
+	off := 8
+	var best uint32
+	found := false
+
+	for range nfat {
+		if off+archSize > len(data) {
+			break
+		}
+
+		var sliceOff, sliceSize uint64
+		if is64 {
+			sliceOff = bo.Uint64(data[off+8 : off+16])
+			sliceSize = bo.Uint64(data[off+16 : off+24])
+		} else {
+			sliceOff = uint64(bo.Uint32(data[off+8 : off+12]))
+			sliceSize = uint64(bo.Uint32(data[off+12 : off+16]))
+		}
+
+		off += archSize
+		if sliceSize < 4 || sliceOff+sliceSize > uint64(len(data)) {
+			continue
+		}
+
+		slice := data[sliceOff : sliceOff+sliceSize]
+		m := binary.LittleEndian.Uint32(slice[:4])
+		if v, ok := thinMinOS(slice, m == MagicBE || m == Magic64BE); ok {
+			found = true
+			if v > best {
+				best = v
+			}
+		}
+	}
+
+	return best, found
+}
+
+func thinMinOS(data []byte, swap bool) (uint32, bool) {
+	var bo binary.ByteOrder = binary.LittleEndian
+	if swap {
+		bo = binary.BigEndian
+	}
+
+	if len(data) < 28 {
+		return 0, false
+	}
+
+	magic := bo.Uint32(data[0:4])
+	is64 := magic == Magic64LE || magic == Magic64BE
+	ncmds := bo.Uint32(data[16:20])
+	headerSize := 28
+	if is64 {
+		headerSize = 32
+	}
+
+	if ncmds > 1<<16 {
+		return 0, false
+	}
+
+	p := headerSize
+	for range ncmds {
+		if p+8 > len(data) {
+			break
+		}
+
+		cmd := bo.Uint32(data[p : p+4])
+		cmdSize := bo.Uint32(data[p+4 : p+8])
+		if cmdSize < 8 || int(cmdSize) > len(data)-p {
+			break
+		}
+
+		switch cmd {
+		case lcBuildVersion:
+			if int(cmdSize) >= 16 && p+16 <= len(data) {
+				return bo.Uint32(data[p+12 : p+16]), true
+			}
+		case lcVersionMinIPhoneOS:
+			if int(cmdSize) >= 12 && p+12 <= len(data) {
+				return bo.Uint32(data[p+8 : p+12]), true
+			}
+		}
+
+		p += int(cmdSize)
+	}
+
+	return 0, false
+}
+
+// EncodeOSVersion packs "16.5.1" into 0xMMMMmmpp for comparison with SliceMinOS.
+func EncodeOSVersion(v string) uint32 {
+	var parts [3]uint32
+	n, cur := 0, uint32(0)
+	seen := false
+
+	for i := 0; i < len(v) && n < 3; i++ {
+		c := v[i]
+		if c >= '0' && c <= '9' {
+			cur = cur*10 + uint32(c-'0')
+			seen = true
+		} else if c == '.' {
+			parts[n] = cur
+			n++
+			cur, seen = 0, false
+		}
+	}
+
+	if seen && n < 3 {
+		parts[n] = cur
+	}
+
+	return parts[0]<<16 | parts[1]<<8 | parts[2]
+}
