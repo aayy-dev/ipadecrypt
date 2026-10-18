@@ -1149,36 +1149,33 @@ func fetchRemoteEncryptedSource(cfg *config.Config, paths *config.Paths, as *app
 		}
 	}
 
-	ticket, err := withAuth(cfg, as, app, storefront, 3, onAuth, func(acc *appstore.Account) (appstore.DownloadTicket, error) {
-		return as.PrepareDownload(acc, app, extVerID)
-	})
+	// The version isn't known until the IPA is in, so it's downloaded under
+	// a temporary name and moved into place afterwards.
+	partPath, err := paths.CachedEncryptedIPA(app.BundleID, "partial")
 	if err != nil {
 		return remoteSourceDisposition{}, err
 	}
+	_ = os.Remove(partPath + ".tmp")
 
-	encPath, err := paths.CachedEncryptedIPA(app.BundleID, ticket.Version())
-	if err != nil {
-		return remoteSourceDisposition{}, err
-	}
-
-	if fileExists(encPath) {
-		return remoteSourceDisposition{
-			path:    encPath,
-			version: ticket.Version(),
-			kind:    sourceDispositionCached,
-		}, nil
-	}
-
-	_, err = withStorefrontAccount(cfg, storefront, func(acc *appstore.Account) (appstore.DownloadOutput, error) {
-		return as.CompleteDownload(acc, ticket, encPath, onProgress)
+	version, err := withAuth(cfg, as, app, storefront, 3, onAuth, func(acc *appstore.Account) (string, error) {
+		return as.Download(acc, app, extVerID, partPath, onProgress)
 	})
 	if err != nil {
 		return remoteSourceDisposition{}, fmt.Errorf("%w: %w", errRemoteDownloadFailed, err)
 	}
 
+	encPath, err := paths.CachedEncryptedIPA(app.BundleID, version)
+	if err != nil {
+		return remoteSourceDisposition{}, err
+	}
+
+	if err := os.Rename(partPath, encPath); err != nil {
+		return remoteSourceDisposition{}, fmt.Errorf("cache downloaded IPA: %w", err)
+	}
+
 	return remoteSourceDisposition{
 		path:    encPath,
-		version: ticket.Version(),
+		version: version,
 		kind:    sourceDispositionDownloaded,
 	}, nil
 }

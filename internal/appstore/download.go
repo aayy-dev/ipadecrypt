@@ -6,24 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	ipatool "github.com/majd/ipatool/v2/pkg/appstore"
+	"github.com/schollz/progressbar/v3"
 	"howett.net/plist"
 )
 
-type DownloadOutput struct {
-	DestinationPath string
-	Sinfs           []Sinf
-}
-
 // DownloadTicket is an App-Store-authorized download: the signed CDN URL to
-// fetch, the per-file sinf licensing blobs, and the response metadata.
-// PrepareDownload returns one; hand it to CompleteDownload to pull the bytes.
-// No bytes move until CompleteDownload runs, so the caller can look at the
-// ticket and decide whether it's worth fetching.
+// fetch, the per-file sinf licensing blobs, and the response metadata. The
+// version listing and metadata lookups read the release details from it.
 type DownloadTicket struct {
 	URL       string
 	Sinfs     []Sinf
@@ -119,21 +112,75 @@ type downloadResult struct {
 	Items           []downloadItem `plist:"songList,omitempty"`
 }
 
-// PrepareDownload authorizes a download with Apple and returns a ticket
-// describing the specific release that will be fetched (URL, sinfs, metadata,
-// asset info). No bytes are transferred. Callers can inspect
-// ticket.Version(), ticket.FileSize() etc. and then hand the ticket to
-// CompleteDownload - or drop it if the version turns out to already be cached.
+// Download fetches app into outPath, with its sinfs and iTunesMetadata.plist
+// in place, and returns the version it fetched. It fetches the latest
+// version, or the one given by externalVersionID. onProgress, if not nil, is
+// called about every 100ms during the transfer.
+//
+// It uses ipatool's download, which since Apple's August 2026 changes tries
+// ent/download with a generated kbsync first and then the volumeStore,
+// redownload and update endpoints in turn. volumeStoreDownloadProduct alone
+// now returns an empty songList for many apps.
 //
 // On ErrPasswordTokenExpired the caller must re-Login and retry.
 // On ErrLicenseRequired the caller must Purchase and retry.
-func (c *Client) PrepareDownload(acc *Account, app App, externalVersionID string) (DownloadTicket, error) {
-	item, err := c.volumeDownload(acc, app, externalVersionID)
-	if err != nil {
-		return DownloadTicket{}, err
+func (c *Client) Download(acc *Account, app App, externalVersionID, outPath string, onProgress func(cur, total int64)) (string, error) {
+	if outPath == "" {
+		return "", errors.New("download: outPath is required (must be a file path)")
 	}
 
-	return DownloadTicket(item), nil
+	var progress *progressbar.ProgressBar
+	if onProgress != nil {
+		progress = progressbar.NewOptions64(-1, progressbar.OptionSetWriter(io.Discard))
+		done := make(chan struct{})
+		defer close(done)
+
+		go func() {
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					if total := progress.GetMax64(); total > 0 {
+						onProgress(int64(progress.State().CurrentBytes), total)
+					}
+				}
+			}
+		}()
+	}
+
+	_, err := c.ipatool().Download(ipatool.DownloadInput{
+		Account:           acc.ipatool(),
+		App:               ipatool.App{ID: app.ID, BundleID: app.BundleID, Name: app.Name, Version: app.Version, Price: app.Price},
+		OutputPath:        outPath,
+		Progress:          progress,
+		ExternalVersionID: externalVersionID,
+	})
+
+	switch {
+	case errors.Is(err, ipatool.ErrPasswordTokenExpired):
+		return "", ErrPasswordTokenExpired
+	case errors.Is(err, ipatool.ErrLicenseRequired):
+		return "", ErrLicenseRequired
+	case err != nil:
+		return "", fmt.Errorf("download: %w", err)
+	}
+
+	if onProgress != nil {
+		if total := progress.GetMax64(); total > 0 {
+			onProgress(total, total)
+		}
+	}
+
+	version, err := ipaVersion(outPath)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+
+	return version, nil
 }
 
 // volumeDownload is the shared POST to the volumeStoreDownloadProduct
@@ -199,335 +246,45 @@ func (c *Client) volumeDownload(acc *Account, app App, externalVersionID string)
 	return out.Items[0], nil
 }
 
-// CompleteDownload fetches the IPA described by `ticket` into outPath.
-// If onProgress is non-nil it is called periodically (throttled to
-// ~100ms) during the CDN fetch with the running byte count and
-// ticket.FileSize() as the total.
-func (c *Client) CompleteDownload(acc *Account, ticket DownloadTicket, outPath string, onProgress func(cur, total int64)) (DownloadOutput, error) {
-	if outPath == "" {
-		return DownloadOutput{}, errors.New("download: outPath is required (must be a file path)")
-	}
-
-	info, err := os.Stat(outPath)
-	if err != nil && !os.IsNotExist(err) {
-		return DownloadOutput{}, fmt.Errorf("download: stat outPath: %w", err)
-	}
-
-	if err == nil && info.IsDir() {
-		return DownloadOutput{}, fmt.Errorf("download: outPath %q is a directory; CompleteDownload expects a file path", outPath)
-	}
-
-	item := downloadItem{
-		URL:      ticket.URL,
-		Sinfs:    ticket.Sinfs,
-		Metadata: ticket.Metadata,
-	}
-
-	tmp := outPath + ".tmp"
-	if err := fetchToFile(c.http, item.URL, tmp, ticket.FileSize(), onProgress); err != nil {
-		return DownloadOutput{}, err
-	}
-
-	if err := applyPatches(tmp, outPath, item, acc); err != nil {
-		return DownloadOutput{}, err
-	}
-
-	if err := os.Remove(tmp); err != nil {
-		return DownloadOutput{}, fmt.Errorf("remove tmp: %w", err)
-	}
-
-	return DownloadOutput{DestinationPath: outPath, Sinfs: item.Sinfs}, nil
-}
-
-func fetchToFile(hc *http.Client, url, dst string, total int64, onProgress func(cur, total int64)) error {
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR, 0o644)
+// ipaVersion returns CFBundleShortVersionString of the app in the IPA at path.
+func ipaVersion(path string) (string, error) {
+	zr, err := zip.OpenReader(path)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", dst, err)
-	}
-
-	defer f.Close()
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-
-	var resumeFrom int64
-	if stat, err := f.Stat(); err == nil && stat.Size() > 0 {
-		resumeFrom = stat.Size()
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
-	}
-
-	res, err := hc.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch: %w", err)
-	}
-
-	defer res.Body.Close()
-
-	switch {
-	case resumeFrom > 0 && res.StatusCode == http.StatusPartialContent:
-		if _, err := f.Seek(resumeFrom, io.SeekStart); err != nil {
-			return fmt.Errorf("seek %s: %w", dst, err)
-		}
-	case res.StatusCode == http.StatusOK:
-		if resumeFrom > 0 {
-			if err := f.Truncate(0); err != nil {
-				return fmt.Errorf("truncate %s: %w", dst, err)
-			}
-
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("seek %s: %w", dst, err)
-			}
-
-			resumeFrom = 0
-		}
-	default:
-		return fmt.Errorf("fetch: status %d", res.StatusCode)
-	}
-
-	// Prefer the ticket-reported size when available; fall back to
-	// Content-Length adjusted for any Range resume.
-	if total <= 0 {
-		if res.ContentLength > 0 {
-			total = resumeFrom + res.ContentLength
-		}
-	}
-
-	var w io.Writer = f
-	if onProgress != nil {
-		w = &progressWriter{w: f, total: total, written: resumeFrom, onProgress: onProgress}
-	}
-
-	if _, err := io.Copy(w, res.Body); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-
-	if onProgress != nil && total > 0 {
-		onProgress(total, total)
-	}
-
-	return nil
-}
-
-// progressWriter counts bytes written and invokes onProgress at most
-// once every 100ms. Callers are expected to emit the final count
-// themselves after io.Copy returns.
-type progressWriter struct {
-	w          io.Writer
-	total      int64
-	written    int64
-	last       time.Time
-	onProgress func(cur, total int64)
-}
-
-func (p *progressWriter) Write(b []byte) (int, error) {
-	n, err := p.w.Write(b)
-	p.written += int64(n)
-
-	now := time.Now()
-	if now.Sub(p.last) >= 100*time.Millisecond {
-		p.last = now
-		p.onProgress(p.written, p.total)
-	}
-
-	return n, err
-}
-
-// applyPatches rebuilds src into dst with iTunesMetadata.plist injected and
-// sinfs replicated into either manifest-listed paths or the SC_Info fallback.
-func applyPatches(src, dst string, item downloadItem, acc *Account) error {
-	zr, err := zip.OpenReader(src)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", src, err)
+		return "", fmt.Errorf("open %s: %w", path, err)
 	}
 
 	defer zr.Close()
 
-	df, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", dst, err)
-	}
-
-	defer df.Close()
-
-	zw := zip.NewWriter(df)
-
 	for _, f := range zr.File {
-		if err := copyZipEntry(f, zw); err != nil {
-			return err
-		}
-	}
-
-	if err := writeMetadataEntry(zw, item.Metadata, acc); err != nil {
-		return err
-	}
-
-	bundleName, err := readBundleName(zr)
-	if err != nil {
-		return err
-	}
-
-	manifest, err := readManifest(zr)
-	if err != nil {
-		return err
-	}
-
-	if manifest != nil {
-		if len(item.Sinfs) != len(manifest.SinfPaths) {
-			return fmt.Errorf("sinf count mismatch: have %d, manifest wants %d", len(item.Sinfs), len(manifest.SinfPaths))
-		}
-
-		for i, p := range manifest.SinfPaths {
-			entry := fmt.Sprintf("Payload/%s.app/%s", bundleName, p)
-			if err := writeEntry(zw, entry, item.Sinfs[i].Data); err != nil {
-				return err
-			}
-		}
-	} else {
-		info, err := readInfo(zr)
-		if err != nil {
-			return err
-		}
-
-		if info == nil {
-			return errors.New("no Info.plist in package")
-		}
-
-		if len(item.Sinfs) == 0 {
-			return errors.New("no sinfs in download response")
-		}
-
-		entry := fmt.Sprintf("Payload/%s.app/SC_Info/%s.sinf", bundleName, info.BundleExecutable)
-		if err := writeEntry(zw, entry, item.Sinfs[0].Data); err != nil {
-			return err
-		}
-	}
-
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("close zip: %w", err)
-	}
-
-	return nil
-}
-
-func copyZipEntry(f *zip.File, zw *zip.Writer) error {
-	rc, err := f.Open()
-	if err != nil {
-		return err
-	}
-
-	defer rc.Close()
-
-	hdr := f.FileHeader
-
-	w, err := zw.CreateHeader(&hdr)
-	if err != nil {
-		return err
-	}
-
-	_, err = io.Copy(w, rc)
-
-	return err
-}
-
-func writeEntry(zw *zip.Writer, name string, data []byte) error {
-	w, err := zw.Create(name)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(data)
-
-	return err
-}
-
-func writeMetadataEntry(zw *zip.Writer, metadata map[string]any, acc *Account) error {
-	out := make(map[string]any, len(metadata)+2)
-	for k, v := range metadata {
-		out[k] = v
-	}
-
-	out["apple-id"] = acc.Email
-	out["userName"] = acc.Email
-
-	data, err := plist.Marshal(out, plist.BinaryFormat)
-	if err != nil {
-		return fmt.Errorf("marshal iTunesMetadata: %w", err)
-	}
-
-	return writeEntry(zw, "iTunesMetadata.plist", data)
-}
-
-type pkgManifest struct {
-	SinfPaths []string `plist:"SinfPaths,omitempty"`
-}
-
-type pkgInfo struct {
-	BundleExecutable string `plist:"CFBundleExecutable,omitempty"`
-}
-
-func readManifest(zr *zip.ReadCloser) (*pkgManifest, error) {
-	for _, f := range zr.File {
-		if !strings.HasSuffix(f.Name, ".app/SC_Info/Manifest.plist") {
+		parts := strings.Split(f.Name, "/")
+		if len(parts) != 3 || parts[0] != "Payload" || !strings.HasSuffix(parts[1], ".app") || parts[2] != "Info.plist" {
 			continue
 		}
 
-		data, err := readZipFile(f)
+		rc, err := f.Open()
 		if err != nil {
-			return nil, err
+			return "", fmt.Errorf("open %s: %w", f.Name, err)
 		}
 
-		var m pkgManifest
-		if _, err := plist.Unmarshal(data, &m); err != nil {
-			return nil, fmt.Errorf("parse Manifest.plist: %w", err)
-		}
-
-		return &m, nil
-	}
-
-	return nil, nil
-}
-
-func readInfo(zr *zip.ReadCloser) (*pkgInfo, error) {
-	for _, f := range zr.File {
-		if !strings.Contains(f.Name, ".app/Info.plist") || strings.Contains(f.Name, "/Watch/") {
-			continue
-		}
-
-		data, err := readZipFile(f)
+		data, err := io.ReadAll(rc)
+		rc.Close()
 		if err != nil {
-			return nil, err
+			return "", fmt.Errorf("read %s: %w", f.Name, err)
 		}
 
-		var i pkgInfo
-		if _, err := plist.Unmarshal(data, &i); err != nil {
-			return nil, fmt.Errorf("parse Info.plist: %w", err)
+		var info struct {
+			Version string `plist:"CFBundleShortVersionString"`
+		}
+		if _, err := plist.Unmarshal(data, &info); err != nil {
+			return "", fmt.Errorf("parse %s: %w", f.Name, err)
 		}
 
-		return &i, nil
-	}
-
-	return nil, nil
-}
-
-func readBundleName(zr *zip.ReadCloser) (string, error) {
-	for _, f := range zr.File {
-		if strings.Contains(f.Name, ".app/Info.plist") && !strings.Contains(f.Name, "/Watch/") {
-			return filepath.Base(strings.TrimSuffix(f.Name, ".app/Info.plist")), nil
+		if info.Version == "" {
+			return "", fmt.Errorf("%s has no CFBundleShortVersionString", f.Name)
 		}
+
+		return info.Version, nil
 	}
 
-	return "", errors.New("no .app/Info.plist in package")
-}
-
-func readZipFile(f *zip.File) ([]byte, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return nil, err
-	}
-
-	defer rc.Close()
-
-	return io.ReadAll(rc)
+	return "", fmt.Errorf("no Payload/*.app/Info.plist in %s", path)
 }

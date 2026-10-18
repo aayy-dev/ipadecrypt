@@ -452,8 +452,17 @@ func fetchEncrypted(cfg *config.Config, paths *config.Paths, as *appstore.Client
 		}
 	}
 
+	// The version isn't known until the IPA is in, so it's downloaded under
+	// a temporary name and moved into place afterwards.
+	partPath, err := paths.CachedEncryptedIPA(app.BundleID, "partial")
+	if err != nil {
+		return "", "", false, err
+	}
+	_ = os.Remove(partPath + ".tmp")
+
 	emit("phase", "step", "name", "prepare-download")
-	ticket, err := appstoreworkflow.WithAuth(cfg, as, app, 3, func(e appstoreworkflow.AuthEvent) {
+	announced := false
+	version, err = appstoreworkflow.WithAuth(cfg, as, app, 3, func(e appstoreworkflow.AuthEvent) {
 		switch e {
 		case appstoreworkflow.AuthReauth:
 			emit("phase", "auth", "name", "reauth")
@@ -462,28 +471,29 @@ func fetchEncrypted(cfg *config.Config, paths *config.Paths, as *appstore.Client
 		case appstoreworkflow.AuthRetryingDownload:
 			emit("phase", "auth", "name", "retry")
 		}
-	}, func() (appstore.DownloadTicket, error) {
-		return as.PrepareDownload(cfg.Apple.Account(), app, externalVersionID)
+	}, func() (string, error) {
+		return as.Download(cfg.Apple.Account(), app, externalVersionID, partPath, func(cur, total int64) {
+			if !announced {
+				announced = true
+				label := app.Version
+				if externalVersionID != "" {
+					label = ""
+				}
+				emit("phase", "download", "version", label, "total", strconv.FormatInt(total, 10))
+			}
+			emit("phase", "download-progress", "current", strconv.FormatInt(cur, 10), "total", strconv.FormatInt(total, 10))
+		})
 	})
 	if err != nil {
 		return "", "", false, err
 	}
 
-	version = ticket.Version()
 	encPath, err := paths.CachedEncryptedIPA(app.BundleID, version)
 	if err != nil {
 		return "", "", false, err
 	}
-	if fileExists(encPath) {
-		return encPath, version, true, nil
-	}
-
-	emit("phase", "download", "version", version, "total", strconv.FormatInt(ticket.FileSize(), 10))
-	_, err = as.CompleteDownload(cfg.Apple.Account(), ticket, encPath, func(cur, total int64) {
-		emit("phase", "download-progress", "current", strconv.FormatInt(cur, 10), "total", strconv.FormatInt(total, 10))
-	})
-	if err != nil {
-		return "", "", false, err
+	if err := os.Rename(partPath, encPath); err != nil {
+		return "", "", false, fmt.Errorf("cache downloaded IPA: %w", err)
 	}
 
 	return encPath, version, false, nil

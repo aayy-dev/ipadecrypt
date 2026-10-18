@@ -19,14 +19,7 @@ import (
 // The first sign-in downloads about 38 MB of Apple assets into the user
 // cache directory, so it can take a minute.
 func (c *Client) Login(email, password, authCode string) (*Account, error) {
-	store := ipatool.NewAppStore(ipatool.Args{
-		Keychain:        discardKeychain{},
-		CookieJar:       c.jar,
-		OperatingSystem: operatingsystem.New(),
-		Machine:         hostMachine,
-	})
-
-	out, err := store.Login(ipatool.LoginInput{
+	out, err := c.ipatool().Login(ipatool.LoginInput{
 		Email:    email,
 		Password: password,
 		AuthCode: authCode,
@@ -49,6 +42,30 @@ func (c *Client) Login(email, password, authCode string) (*Account, error) {
 		Pod:                 acc.Pod,
 		Name:                strings.TrimSpace(acc.Name),
 	}, nil
+}
+
+// ipatool returns ipatool's App Store client, sharing this client's cookies
+// and machine identity.
+func (c *Client) ipatool() ipatool.AppStore {
+	return ipatool.NewAppStore(ipatool.Args{
+		Keychain:        discardKeychain{},
+		CookieJar:       c.jar,
+		OperatingSystem: operatingsystem.New(),
+		Machine:         hostMachine,
+	})
+}
+
+// ipatool returns acc as ipatool's account type.
+func (acc *Account) ipatool() ipatool.Account {
+	return ipatool.Account{
+		Email:               acc.Email,
+		PasswordToken:       acc.PasswordToken,
+		DirectoryServicesID: acc.DirectoryServicesID,
+		Name:                acc.Name,
+		StoreFront:          acc.StoreFront,
+		Password:            acc.Password,
+		Pod:                 acc.Pod,
+	}
 }
 
 // loginError maps ipatool's login errors onto the ones callers here check
@@ -96,7 +113,8 @@ func loginFailure(metadata any) (string, string) {
 }
 
 // discardKeychain is the keychain given to ipatool, which saves the account
-// there after signing in. Callers here store the returned account themselves.
+// there after signing in and caches kbsync blobs there. Callers here store
+// the account themselves, and kbsync is regenerated when needed.
 type discardKeychain struct{}
 
 func (discardKeychain) Get(string) ([]byte, error) { return nil, errors.New("not stored") }
