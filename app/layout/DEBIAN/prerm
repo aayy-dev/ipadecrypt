@@ -1,0 +1,31 @@
+#!/bin/sh
+# Stop the daemon and remove what postinst created outside the package's own
+# files (the LaunchDaemon plist, socket and pidfile), so removing the package
+# leaves nothing running. Upgrades are left alone: the new postinst restarts it.
+
+[ "$1" = remove ] || [ "$1" = purge ] || exit 0
+
+jb_path() {
+    if command -v jbroot >/dev/null 2>&1; then
+        jbroot "$1"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+PATH="$(jb_path /var/jb/usr/bin):$(jb_path /var/jb/bin):/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+
+PLIST="$(jb_path /var/jb/Library/LaunchDaemons/com.korboy.ipadecryptd.plist)"
+RUN_DIR="$(jb_path /var/jb/var/run)"
+
+launchctl bootout system "$PLIST" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+if command -v ps >/dev/null 2>&1; then
+    ps -axo pid,command | awk '/[i]padecryptd-supervisor/ { print $1 }' | while read -r pid; do
+        kill "$pid" 2>/dev/null || true
+    done
+fi
+killall ipadecryptd 2>/dev/null || true
+rm -f "$PLIST" "$RUN_DIR/ipadecryptd.sock" "$RUN_DIR/ipadecryptd.pid" 2>/dev/null || true
+
+exit 0

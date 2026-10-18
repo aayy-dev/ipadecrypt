@@ -1,7 +1,9 @@
 #!/bin/sh
 # Build the Theos rootless app package and install it on the device.
 #
-# Requires the standard ssh-iphone / scp-iphone wrappers.
+# INSTALL=0 only builds the package. Otherwise it's installed over ssh, with
+# the ssh-iphone / scp-iphone wrappers if present, or else the host in
+# IPADECRYPT_DEVICE (default "iphone").
 
 set -e
 cd "$(dirname "$0")"
@@ -15,11 +17,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+DEVICE="${IPADECRYPT_DEVICE:-iphone}"
+
 copy_to_iphone() {
   if command -v scp-iphone >/dev/null 2>&1; then
     scp-iphone "$1" "$2"
   else
-    scp "$1" "iphone:$2"
+    scp "$1" "$DEVICE:$2"
   fi
 }
 
@@ -27,7 +31,7 @@ run_on_iphone() {
   if command -v ssh-iphone >/dev/null 2>&1; then
     ssh-iphone "$1"
   else
-    "$HOME/bin/ssh-iphone" "$1"
+    ssh "$DEVICE" "$1"
   fi
 }
 
@@ -72,14 +76,17 @@ mkdir -p layout/usr/libexec
   "$GO" build -trimpath -ldflags="-s -w" -o app/layout/usr/libexec/ipadecryptd ./cmd/ipadecryptd )
 ldid -Sdaemon.entitlements.plist layout/usr/libexec/ipadecryptd
 chmod +x layout/usr/libexec/ipadecryptd
-chmod +x layout/DEBIAN/postinst
+chmod +x layout/DEBIAN/postinst layout/DEBIAN/prerm
 
 THEOS="$THEOS" make package FINALPACKAGE=1
 
-DEB=$(ls -t packages/com.korboy.ipadecrypt_*.deb | head -1)
+PACKAGE=$(sed -n 's/^Package: //p' control)
+DEB=$(ls -t packages/"$PACKAGE"_*.deb | head -1)
 [ -n "$DEB" ] || { echo "no .deb produced" >&2; exit 1; }
+echo "built $DEB"
+[ "${INSTALL:-1}" = 0 ] && exit 0
 
 REMOTE="/var/mobile/Documents/Downloads/$(basename "$DEB")"
 copy_to_iphone "$DEB" "$REMOTE"
-run_on_iphone "dpkg -r com.korboy.ipadecrypt-app 2>/dev/null || true; dpkg -i '$REMOTE' && dpkg -s com.korboy.ipadecrypt | grep -q '^Status: install ok installed' && uicache -p /var/jb/Applications/ipadecrypt.app && open com.korboy.ipadecrypt"
+run_on_iphone "sudo dpkg -i '$REMOTE' && dpkg -s $PACKAGE | grep -q '^Status: install ok installed' && uicache -p /var/jb/Applications/ipadecrypt.app && open com.korboy.ipadecrypt"
 echo "installed - app path: /var/jb/Applications/ipadecrypt.app"
