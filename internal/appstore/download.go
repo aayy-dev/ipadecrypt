@@ -152,7 +152,9 @@ func (c *Client) Download(acc *Account, app App, externalVersionID, outPath stri
 		}()
 	}
 
-	_, err := c.ipatool().Download(ipatool.DownloadInput{
+	store := c.ipatool()
+
+	out, err := store.Download(ipatool.DownloadInput{
 		Account:           acc.ipatool(),
 		App:               ipatool.App{ID: app.ID, BundleID: app.BundleID, Name: app.Name, Version: app.Version, Price: app.Price},
 		OutputPath:        outPath,
@@ -167,6 +169,18 @@ func (c *Client) Download(acc *Account, app App, externalVersionID, outPath stri
 		return "", ErrLicenseRequired
 	case err != nil:
 		return "", fmt.Errorf("download: %w", err)
+	}
+
+	// ipatool's Download returns the FairPlay licenses but doesn't put them
+	// in the package; its own CLI does that as a separate step. Without
+	// SC_Info/<exec>.sinf the kernel can't decrypt the binary, so the app
+	// can't launch and therefore can't be decrypted.
+	if len(out.Sinfs) == 0 {
+		return "", errors.New("download: Apple returned no FairPlay license (sinf) for this app")
+	}
+
+	if err := store.ReplicateSinf(ipatool.ReplicateSinfInput{Sinfs: out.Sinfs, PackagePath: outPath}); err != nil {
+		return "", fmt.Errorf("download: write FairPlay license: %w", err)
 	}
 
 	if onProgress != nil {
