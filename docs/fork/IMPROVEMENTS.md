@@ -1,5 +1,12 @@
 # Limitations and improvements
 
+> **Shipped (2026-10-18, dev.aayy.ipadecrypt 0.7.3-aayy.4):** SAP sign-in,
+> ipatool downloads + FairPlay-licence (.sinf) write, and verify that skips
+> newer-iOS-only components instead of failing. On the test device YouTube
+> (min iOS 17) decrypts 7/8 Mach-Os; the 8th is an iOS-26-only extension that
+> can't run or be decrypted on iOS 16 and is now reported as skipped.
+
+
 A running list of what makes ipadecrypt (korboy v0.7.3-korboy.2, `51ed4f3`) hard
 for a casual user, and what to change. Every item cites the code it comes
 from (`file:line@ref`). Severity is blocker, major or minor; improvements are

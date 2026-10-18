@@ -16,6 +16,27 @@
 
 </div>
 
+## Fork changes (aayy-dev)
+
+This fork of korboy's ipadecrypt restores App Store sign-in and downloads
+against Apple's current API, and ships as `dev.aayy.ipadecrypt`:
+
+- **Sign-in** now uses [ipatool](https://github.com/majd/ipatool) v2.7.0's
+  SAP-signed authentication (Apple started requiring the
+  `X-Apple-ActionSignature` in 2026; the old unsigned login no longer works).
+- **Downloads** go through ipatool v2.7.0 (ent/download + fallbacks) and write
+  the FairPlay licence (`SC_Info/<exec>.sinf`) into the IPA, without which an
+  installed app can't launch and so can't be decrypted. Downloads also send
+  `serialNumber` to avoid Apple's 5002 response.
+- **Verify** treats a binary built for a newer iOS than the device as a skip
+  ("requires iOS N"), not a failure: such a component can't run or be
+  decrypted on the device, and often isn't even usable there.
+- On-device Unicorn is built static for the appstore-helper so SAP works on
+  iOS (see `app/build-unicorn.sh`).
+
+See `docs/fork/INVESTIGATION.md` and `docs/fork/IMPROVEMENTS.md` for details.
+Built against ipatool v2.7.0; pin that version when updating.
+
 ## Fork changes (korboybeats)
 
 This fork adds a handful of QoL features on top of upstream:
