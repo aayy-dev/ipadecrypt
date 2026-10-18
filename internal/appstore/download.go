@@ -132,6 +132,11 @@ func (c *Client) Download(acc *Account, app App, externalVersionID, outPath stri
 	var progress *progressbar.ProgressBar
 	if onProgress != nil {
 		progress = progressbar.NewOptions64(-1, progressbar.OptionSetWriter(io.Discard))
+		// NewOptions64(-1) starts as a spinner whose GetMax64() reports a
+		// placeholder (40), not -1. Only report progress once ipatool's
+		// downloadFile has ChangeMax64'd it to the real size, so the app
+		// never sees a bogus 40-byte total.
+		placeholderMax := progress.GetMax64()
 		done := make(chan struct{})
 		defer close(done)
 
@@ -144,7 +149,7 @@ func (c *Client) Download(acc *Account, app App, externalVersionID, outPath stri
 				case <-done:
 					return
 				case <-ticker.C:
-					if total := progress.GetMax64(); total > 0 {
+					if total := progress.GetMax64(); total > 0 && total != placeholderMax {
 						onProgress(int64(progress.State().CurrentBytes), total)
 					}
 				}
