@@ -530,12 +530,12 @@ func patchForInstall(src, targetOS string, family int) (string, func(), error) {
 		os.Remove(dst)
 		return "", func() {}, err
 	}
-	if !res.MinOSChanged && res.WatchRemoved == 0 && !res.DeviceFamilyExpanded && res.MachOMinOSPatched == 0 {
+	if !res.MinOSChanged && res.WatchRemoved == 0 && !res.DeviceFamilyExpanded {
 		os.Remove(dst)
 		emit("phase", "patch", "changed", "0")
 		return src, func() {}, nil
 	}
-	emit("phase", "patch", "changed", "1", "minos", boolString(res.MinOSChanged), "machoMinos", strconv.Itoa(res.MachOMinOSPatched), "watchRemoved", strconv.Itoa(res.WatchRemoved))
+	emit("phase", "patch", "changed", "1", "minos", boolString(res.MinOSChanged), "watchRemoved", strconv.Itoa(res.WatchRemoved))
 	return dst, func() { os.Remove(dst) }, nil
 }
 

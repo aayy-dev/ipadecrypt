@@ -1204,7 +1204,7 @@ func patchSourceForDevice(encPath, iosVersion string, deviceFamily int, patchDev
 		return patchResult{}, err
 	}
 
-	if !res.MinOSChanged && res.WatchRemoved == 0 && !res.DeviceFamilyExpanded && res.MachOMinOSPatched == 0 {
+	if !res.MinOSChanged && res.WatchRemoved == 0 && !res.DeviceFamilyExpanded {
 		os.Remove(tmp)
 		return patchResult{uploadPath: encPath}, nil
 	}

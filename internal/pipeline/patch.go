@@ -4,12 +4,10 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -21,7 +19,6 @@ type PatchResult struct {
 	MinOSChanged         bool
 	PreviousMinOS        string
 	WatchRemoved         int
-	MachOMinOSPatched    int
 	DeviceFamilyExpanded bool
 	PreviousDeviceFamily []int
 	NewDeviceFamily      []int
@@ -124,28 +121,6 @@ func PatchForInstall(src, dst, target string, deviceFamily int, patchDeviceType,
 			}
 
 			continue
-		}
-
-		// Patch the Mach-O minimum-OS load command down to the target, so
-		// SpringBoard will actually launch an app built for a newer iOS (it
-		// gates on the binary's LC_BUILD_VERSION/LC_VERSION_MIN, not the
-		// Info.plist). Without this the decrypt helper can't launch the app
-		// and only partially decrypts it.
-		if machOCandidate(f) {
-			data, patched, err := patchEntryMachOMinOS(f, target)
-			if err != nil {
-				return res, fmt.Errorf("patch min-os %s: %w", f.Name, err)
-			}
-
-			if patched {
-				if err := writeBytes(f, w, data); err != nil {
-					return res, fmt.Errorf("rewrite %s: %w", f.Name, err)
-				}
-
-				res.MachOMinOSPatched++
-
-				continue
-			}
 		}
 
 		if err := copyEntry(f, w); err != nil {
@@ -631,168 +606,6 @@ func isWatchPath(name string) bool {
 	}
 
 	return parts[2] == "Watch"
-}
-
-func machOCandidate(f *zip.File) bool {
-	if f.FileInfo().IsDir() {
-		return false
-	}
-
-	if !strings.HasPrefix(f.Name, "Payload/") {
-		return false
-	}
-
-	base := path.Base(f.Name)
-
-	return strings.HasSuffix(base, ".dylib") || !strings.Contains(base, ".")
-}
-
-// patchEntryMachOMinOS reads a zip entry and, if it is a Mach-O (thin or fat)
-// whose minimum-OS load commands exceed target, returns the patched bytes.
-// (nil, false, nil) means leave the entry untouched (not a Mach-O, or already
-// low enough) so the caller copies it verbatim.
-func patchEntryMachOMinOS(f *zip.File, target string) ([]byte, bool, error) {
-	rc, err := f.Open()
-	if err != nil {
-		return nil, false, err
-	}
-
-	defer rc.Close()
-
-	data, err := io.ReadAll(rc)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if patchMachOMinOS(data, encodeVersion(target)) {
-		return data, true, nil
-	}
-
-	return nil, false, nil
-}
-
-const (
-	machoMagic64    = 0xFEEDFACF
-	fatMagic        = 0xCAFEBABE
-	fatMagic64      = 0xCAFEBABF
-	lcVersionMinIOS = 0x25
-	lcBuildVersion  = 0x32
-)
-
-// encodeVersion packs "16.5.1" into the Mach-O nibble form 0xMMMMmmpp.
-func encodeVersion(v string) uint32 {
-	parts := strings.Split(v, ".")
-
-	val := func(i int) uint32 {
-		if i < len(parts) {
-			n, _ := strconv.Atoi(parts[i])
-			return uint32(n)
-		}
-
-		return 0
-	}
-
-	return val(0)<<16 | val(1)<<8 | val(2)
-}
-
-// patchMachOMinOS lowers LC_BUILD_VERSION.minos and LC_VERSION_MIN_IPHONEOS to
-// target in every slice of a thin or fat Mach-O, in place. It returns whether
-// anything changed. Only lowering is performed.
-func patchMachOMinOS(data []byte, target uint32) bool {
-	if len(data) < 8 {
-		return false
-	}
-
-	switch binary.BigEndian.Uint32(data) {
-	case fatMagic, fatMagic64:
-		return patchFatMachO(data, target)
-	}
-
-	if binary.LittleEndian.Uint32(data) == machoMagic64 {
-		return patchThinMachO(data, 0, target)
-	}
-
-	return false
-}
-
-func patchFatMachO(data []byte, target uint32) bool {
-	is64 := binary.BigEndian.Uint32(data) == fatMagic64
-	n := binary.BigEndian.Uint32(data[4:])
-	changed := false
-	off := 8
-
-	for i := uint32(0); i < n; i++ {
-		var sliceOff uint64
-
-		if is64 {
-			if off+32 > len(data) {
-				break
-			}
-
-			sliceOff = binary.BigEndian.Uint64(data[off+8:])
-			off += 32
-		} else {
-			if off+20 > len(data) {
-				break
-			}
-
-			sliceOff = uint64(binary.BigEndian.Uint32(data[off+8:]))
-			off += 20
-		}
-
-		if sliceOff < uint64(len(data)) && patchThinMachO(data, int(sliceOff), target) {
-			changed = true
-		}
-	}
-
-	return changed
-}
-
-// patchThinMachO walks the load commands of a little-endian 64-bit Mach-O at
-// base and lowers its min-OS fields to target. Returns whether it changed.
-func patchThinMachO(data []byte, base int, target uint32) bool {
-	if base+32 > len(data) || binary.LittleEndian.Uint32(data[base:]) != machoMagic64 {
-		return false
-	}
-
-	ncmds := binary.LittleEndian.Uint32(data[base+16:])
-	p := base + 32
-	changed := false
-
-	for i := uint32(0); i < ncmds; i++ {
-		if p+8 > len(data) {
-			break
-		}
-
-		cmd := binary.LittleEndian.Uint32(data[p:])
-		cmdsize := int(binary.LittleEndian.Uint32(data[p+4:]))
-		if cmdsize < 8 || p+cmdsize > len(data) {
-			break
-		}
-
-		// The min-OS field sits at different offsets in the two commands:
-		// LC_BUILD_VERSION is {cmd, cmdsize, platform, minos, ...} so minos is
-		// at offset 12; LC_VERSION_MIN_IPHONEOS is {cmd, cmdsize, version, sdk}
-		// so version is at offset 8.
-		verOff := -1
-		switch cmd {
-		case lcBuildVersion:
-			verOff = 12
-		case lcVersionMinIOS:
-			verOff = 8
-		}
-
-		if verOff >= 0 && p+verOff+4 <= len(data) {
-			if cur := binary.LittleEndian.Uint32(data[p+verOff:]); cur > target {
-				binary.LittleEndian.PutUint32(data[p+verOff:], target)
-				changed = true
-			}
-		}
-
-		p += cmdsize
-	}
-
-	return changed
 }
 
 func cmpVer(a, b string) int {
