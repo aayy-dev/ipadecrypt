@@ -49,10 +49,13 @@ else
   exit 1
 fi
 IOS_CC="$IOS_CLANG -target arm64-apple-ios15.0 -isysroot $IOS_SDK -Wno-incompatible-sysroot -Wno-unused-command-line-argument"
+# App Store sign-in runs Apple's signing code in Unicorn, which has to be
+# linked into the helper statically (see build-unicorn.sh).
+UNICORN_LIB=$(./build-unicorn.sh)
 ( cd .. && \
   GOOS=ios GOARCH=arm64 CGO_ENABLED=1 \
   CC="$IOS_CC" \
-  CGO_LDFLAGS="$IOS_LDFLAGS" \
+  CGO_LDFLAGS="$IOS_LDFLAGS -Wl,-force_load,$UNICORN_LIB -Wl,-export_dynamic" \
   "$GO" build -trimpath -ldflags="-s -w" -o app/Resources/appstore-helper.arm64 ./cmd/ipadecrypt-appstore-helper )
 ldid -Sappstore-helper.entitlements.plist Resources/appstore-helper.arm64
 chmod +x Resources/appstore-helper.arm64

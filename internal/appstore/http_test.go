@@ -42,7 +42,7 @@ func TestSendReturnsClearRateLimitError(t *testing.T) {
 		})},
 	}
 
-	var out loginResult
+	var out downloadResult
 	_, err := client.send(http.MethodPost, "https://example.test/auth", nil, nil, formatXML, &out)
 	if err == nil {
 		t.Fatal("send returned nil error")
@@ -73,12 +73,12 @@ func TestSendReturnsRateLimitErrorWithoutDecodeTarget(t *testing.T) {
 	}
 }
 
-func TestSendPreservesDiscoveryURLAndRedactsDecodeError(t *testing.T) {
+func TestSendRedactsDecodeError(t *testing.T) {
 	const secret = "supersecret"
 	client := &Client{
 		jar: &cookiejar.Jar{},
 		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			body := "passwordToken=" + secret + " https://auth.itunes.apple.com/auth/v1/native"
+			body := "passwordToken=" + secret
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"text/plain"}},
@@ -87,7 +87,7 @@ func TestSendPreservesDiscoveryURLAndRedactsDecodeError(t *testing.T) {
 		})},
 	}
 
-	var out loginResult
+	var out downloadResult
 	_, err := client.send(http.MethodPost, "https://example.test/auth", nil, nil, formatXML, &out)
 	var decodeErr *ResponseDecodeError
 	if !errors.As(err, &decodeErr) {
@@ -95,10 +95,6 @@ func TestSendPreservesDiscoveryURLAndRedactsDecodeError(t *testing.T) {
 	}
 	if strings.Contains(decodeErr.Body, secret) {
 		t.Fatalf("decode body leaked secret: %q", decodeErr.Body)
-	}
-	want := "https://auth.itunes.apple.com/auth/v1/native/fast/"
-	if got := authEndpointFromResponseError(err); got != want {
-		t.Fatalf("discovered endpoint = %q, want %q", got, want)
 	}
 }
 

@@ -20,3 +20,4 @@ dist/
 helper/ipadecryptautoalert/packages/
 helper/ipadecryptautoalert/obj/
 .DS_Store
+/app/.build/

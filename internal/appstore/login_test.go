@@ -2,79 +2,84 @@ package appstore
 
 import (
 	"errors"
-	"io"
-	"net/http"
+	"fmt"
 	"strings"
 	"testing"
 
-	cookiejar "github.com/juju/persistent-cookiejar"
-	"howett.net/plist"
+	ipatool "github.com/majd/ipatool/v2/pkg/appstore"
 )
 
-func TestInterpretLoginReturnsTypedInvalidCredentials(t *testing.T) {
-	res := testHTTPResponse(http.StatusOK, "")
-	out := &loginResult{FailureType: failureInvalidCredentials, CustomerMessage: "Incorrect Apple ID or password"}
-
-	_, retry, err := interpretLogin(res, out, 2, "")
-	if retry {
-		t.Fatal("invalid credentials should not retry after the first attempt")
-	}
-	if !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("error = %v, want ErrInvalidCredentials", err)
+// loginResponse mirrors the shape of the http.Result ipatool attaches to its
+// login errors.
+type loginResponse struct {
+	StatusCode int
+	Data       struct {
+		FailureType     string
+		CustomerMessage string
 	}
 }
 
-func TestLoginEndpointDiscoveryDoesNotConsumeLogicalAttempt(t *testing.T) {
-	var attempts []string
-	authRequests := 0
+func failedLogin(failureType, message string) error {
+	var res loginResponse
+	res.StatusCode = 200
+	res.Data.FailureType = failureType
+	res.Data.CustomerMessage = message
 
-	client := &Client{
-		jar: &cookiejar.Jar{},
-		http: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method == http.MethodGet {
-				body := `{ authenticateAccount = "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate"; }`
-				return testHTTPResponse(http.StatusOK, body), nil
-			}
+	return ipatool.NewErrorWithMetadata(errors.New(message), res)
+}
 
-			authRequests++
-			body, err := io.ReadAll(req.Body)
-			if err != nil {
-				t.Fatalf("read request: %v", err)
-			}
-			var request struct {
-				Attempt string `plist:"attempt"`
-			}
-			if _, err := plist.Unmarshal(body, &request); err != nil {
-				t.Fatalf("decode request: %v", err)
-			}
-			attempts = append(attempts, request.Attempt)
-
-			switch authRequests {
-			case 1:
-				return testHTTPResponse(http.StatusOK, `redirect=https:\/\/auth.itunes.apple.com\/auth\/v1\/native`), nil
-			case 2:
-				return testHTTPResponse(http.StatusOK, `{ failureType = "-5000"; }`), nil
-			default:
-				res := testHTTPResponse(http.StatusOK, `{ dsPersonId = "123"; passwordToken = "token"; }`)
-				res.Header.Set(hdrStoreFront, "143441-1,29")
-				return res, nil
-			}
-		})},
+func TestLoginError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		is       error
+		contains string
+	}{
+		{
+			name: "2FA code required",
+			err:  fmt.Errorf("wrapped: %w", ipatool.ErrAuthCodeRequired),
+			is:   ErrAuthCodeRequired,
+		},
+		{
+			name:     "wrong password",
+			err:      failedLogin(failureInvalidCredentials, "Your Apple ID or password was entered incorrectly."),
+			is:       ErrInvalidCredentials,
+			contains: "entered incorrectly",
+		},
+		{
+			name:     "other Apple failure",
+			err:      failedLogin("2059", "Temporarily unavailable"),
+			contains: "login: Temporarily unavailable",
+		},
+		{
+			name:     "transport error",
+			err:      errors.New("sign-in request failed: connection reset"),
+			contains: "login: sign-in request failed",
+		},
 	}
 
-	if _, err := client.Login("test@example.com", "password", ""); err != nil {
-		t.Fatalf("Login: %v", err)
-	}
-	want := []string{"1", "1", "2"}
-	if strings.Join(attempts, ",") != strings.Join(want, ",") {
-		t.Fatalf("attempts = %v, want %v", attempts, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := loginError(tt.err)
+			if tt.is != nil && !errors.Is(got, tt.is) {
+				t.Fatalf("loginError() = %v, want it to wrap %v", got, tt.is)
+			}
+			if tt.is == nil && (errors.Is(got, ErrInvalidCredentials) || errors.Is(got, ErrAuthCodeRequired)) {
+				t.Fatalf("loginError() = %v, classified as a credential error", got)
+			}
+			if tt.contains != "" && !strings.Contains(got.Error(), tt.contains) {
+				t.Fatalf("loginError() = %q, want it to contain %q", got, tt.contains)
+			}
+		})
 	}
 }
 
-func testHTTPResponse(status int, body string) *http.Response {
-	return &http.Response{
-		StatusCode: status,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(body)),
+func TestDiscardKeychain(t *testing.T) {
+	var k discardKeychain
+	if err := k.Set("account", []byte("{}")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, err := k.Get("account"); err == nil {
+		t.Fatal("Get returned an account; nothing should be stored")
 	}
 }

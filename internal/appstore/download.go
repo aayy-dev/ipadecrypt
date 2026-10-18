@@ -157,6 +157,8 @@ func (c *Client) volumeDownload(acc *Account, app App, externalVersionID string)
 		"creditDisplay": "",
 		"guid":          g,
 		"salableAdamId": app.ID,
+		// Without it Apple answers 5002 (majd/ipatool#500).
+		"serialNumber": "0",
 	}
 	if externalVersionID != "" {
 		payload["externalVersionId"] = externalVersionID

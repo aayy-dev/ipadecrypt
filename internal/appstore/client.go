@@ -1,14 +1,14 @@
 package appstore
 
 import (
-	"errors"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
 	cookiejar "github.com/juju/persistent-cookiejar"
+	"github.com/majd/ipatool/v2/pkg/util/machine"
+	"github.com/majd/ipatool/v2/pkg/util/operatingsystem"
 )
 
 type Client struct {
@@ -28,47 +28,23 @@ func New(cookiesFile string) (*Client, error) {
 		return nil, err
 	}
 
-	hc := &http.Client{
-		Jar: jar,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if req.Referer() == authURL {
-				return http.ErrUseLastResponse
-			}
-
-			return nil
-		},
-	}
+	hc := &http.Client{Jar: jar}
 
 	return &Client{jar: jar, http: hc}, nil
 }
 
+// hostMachine identifies this machine to Apple, the same way for sign-in
+// (through ipatool) and for every other request. It skips placeholder and
+// randomized MAC addresses such as 02:00:00:00:00:00, which would give many
+// machines the same identity.
+var hostMachine = machine.New(machine.Args{OS: operatingsystem.New()})
+
 // guid returns the Configurator-shaped GUID: uppercase MAC address, no colons.
 func guid() (string, error) {
-	mac, err := macAddress()
+	mac, err := hostMachine.MacAddress()
 	if err != nil {
 		return "", err
 	}
 
 	return strings.ReplaceAll(strings.ToUpper(mac), ":", ""), nil
-}
-
-func macAddress() (string, error) {
-	if iface, err := net.InterfaceByName("en0"); err == nil && iface.HardwareAddr != nil {
-		if s := iface.HardwareAddr.String(); s != "" {
-			return s, nil
-		}
-	}
-
-	ifs, err := net.Interfaces()
-	if err != nil {
-		return "", err
-	}
-
-	for _, ni := range ifs {
-		if s := ni.HardwareAddr.String(); s != "" {
-			return s, nil
-		}
-	}
-
-	return "", errors.New("no network interface with a MAC address")
 }

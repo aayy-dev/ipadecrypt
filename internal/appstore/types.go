@@ -50,10 +50,6 @@ const (
 	storeDomain  = "buy." + iTunesDomain
 	purchasePath = "/WebObjects/MZFinance.woa/wa/buyProduct"
 	downloadPath = "/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct"
-	authURL      = "https://buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/authenticate"
-
-	PrivateAuthDomain     = "auth." + iTunesDomain
-	PrivateAuthPathNative = "/auth/v1/native/fast/"
 
 	hdrStoreFront = "X-Set-Apple-Store-Front"
 	hdrPod        = "pod"
