@@ -248,31 +248,22 @@ Retire the native/fast tests (auth_endpoint_test.go, login_test.go:27-72@51ed4f3
   addresses: App Store sign-in cannot succeed: the authenticate request is unsigned; Errors are vague and the cause is hidden or never logged; No storage management, and a failed patch poisons the cache
   notes: The investigators already wrote throwaway versions of these tests (zz_trace_test.go and the ipatool wire tests), so this is mostly turning them into permanent files. Run them with HTTPS_PROXY=127.0.0.1:9 so they can't reach Apple.
 
-## Found on the device (2026-10-18)
+## Verified on the device (2026-10-18)
 
-- [major] **A partial decrypt is reported as success.** Claude 1.261016.20
-  (requires iOS 18.0) on iOS 16.5.1 produced an IPA in which the main binary,
-  LinkKit.framework and four extensions still had cryptid 1, yet the helper
-  exited 0 with `done`.
-  - Why: helper/decrypt.c:111-125, where the ptrace path returns 0 after a
-    failed `vm_read`. Nothing checks cryptid before reporting success.
-  - Fix (must/small): verify every Mach-O in the output, and fail with
-    exit 31 and the list of still-encrypted images.
-- [major] **Apps that need a newer iOS can't be decrypted on this device.**
-  - The app patches MinimumOSVersion (18.0 → 16.5.1) so appinst installs the
-    build, then:
-    - `SBSLaunchApplicationWithIdentifier` gets no pid within 2 s
-      (helper/spawn.c:177-184);
-    - the ptrace fallback skips the dyld patch and frameworks
-      (decrypt.c:111) and fails `vm_read` with KERN_INVALID_ADDRESS (kr=2).
-  - The failing address was identical for every process in a run
-    (0x104dac000 in one run, 0x100f9c000 in the next), so the ptrace path's
-    address calculation looks wrong.
-  - Fix (should/medium): debug the SBS launch with Frida on
-    SpringBoard/runningboardd; fix the ptrace address calculation.
-  - Until then, before downloading, warn when the build's MinimumOSVersion
-    is above the device's iOS, and offer "Latest iOS-compatible" or the
-    version picker.
-- [minor] **Installing over an incompatible build leaves an app that can't
-  launch** on the home screen. Offer to remove it, or install it only for
-  decrypting.
+- **NOT a regression: apps that can't launch on this iOS can't be fully
+  decrypted.** Claude 1.261016.20 (links iOS 18 frameworks) on iOS 16.5.1
+  decrypted only the parts that loaded; the main binary, LinkKit.framework and
+  four app extensions kept cryptid 1. **korboy's own released helper.arm64
+  (md5 252fdad, byte-identical to what this fork ships) produces the exact same
+  6-still-encrypted result**, so this is inherent to launch-based FairPlay
+  decryption, not something this fork changed. Mechanism: SpringBoard won't
+  launch the build (`SBS launch produced no pid`), so there's no running
+  process to dump; patching MinimumOSVersion lets it install but not run.
+  - The app DOES catch this: the appstore-helper's verify step logs
+    `N binary(ies) still have cryptid != 0` and exits 30. So "partial decrypt
+    reported as success" was wrong at the app level; only the raw helper
+    returns 0.
+  - Possible QoL (should/medium): before downloading, warn when a build's
+    MinimumOSVersion exceeds the device iOS and the build won't launch; steer
+    to the version picker or "Latest iOS-compatible". Leave a non-launchable
+    install removable.
