@@ -248,64 +248,42 @@ Retire the native/fast tests (auth_endpoint_test.go, login_test.go:27-72@51ed4f3
   addresses: App Store sign-in cannot succeed: the authenticate request is unsigned; Errors are vague and the cause is hidden or never logged; No storage management, and a failed patch poisons the cache
   notes: The investigators already wrote throwaway versions of these tests (zz_trace_test.go and the ipatool wire tests), so this is mostly turning them into permanent files. Run them with HTTPS_PROXY=127.0.0.1:9 so they can't reach Apple.
 
-## Verified on the device via Frida (2026-10-18)
+## RESOLVED: partial decrypts were a regression from the ipatool download (2026-10-18)
 
-**Root cause of partial decrypts of higher-iOS apps: SpringBoard won't launch
-them, because only the Info.plist min-OS is patched, not the Mach-O's.**
+**Root cause (verified):** `Client.Download` called ipatool's `Download` but
+not `ReplicateSinf`. ipatool returns the FairPlay licenses (sinfs) without
+writing them into the package; its own CLI does that as a separate step. So
+every IPA downloaded through the new path had **no SC_Info/<exec>.sinf**.
+With no license the kernel can't decrypt the binary at exec, so:
+- SpringBoard "launched" the app (SBSLaunchApplicationWithIdentifier returned
+  0) but no process ever ran;
+- the helper fell back to its ptrace path, whose vm_read of the still-
+  undecryptable images failed (kr=2), giving 1/8 decrypted.
 
-Traced with super-trouper: spawned helper.arm64 suspended, hooked dlsym ->
-SBSLaunchApplicationWithIdentifier, resumed.
-- `SBSLaunchApplicationWithIdentifier("com.google.ios.youtube", suspended=1)`
-  returns **rc=0 but spawns no process** (polled ~2s, none appeared).
-- The installed YouTube: Info.plist MinimumOSVersion = 16.5.1 (patched), but
-  the Mach-O `LC_BUILD_VERSION minos = 17.0`. Device is 16.5.1.
-- SpringBoard gates on the binary's minos, not Info.plist, so it silently
-  declines. The helper's find-pid loop fails -> ptrace fallback (7
-  PT_ATTACHEXC spawns) -> "main only, no framework enumeration" -> 7/8 stay
-  encrypted.
-- `internal/pipeline/patch.go` `PatchForInstall` only rewrites Info.plist
-  MinimumOSVersion. **Neither korboy nor londek patches the Mach-O min-OS**, and
-  korboy's released helper reproduces the same partial result here. So this is
-  a pre-existing gap on this device (A16 / iOS 16.5.1), independent of the
-  sign-in/download fix.
+Found by comparing SC_Info across installed apps: every working App Store app
+had <exec>.sinf; only the two downloaded by the new path (YouTube, Claude) did
+not. Fixed in commit 0dc0ee5 (calls ReplicateSinf, errors if Apple returns no
+license), with a regression test.
 
-**Fix to implement and validate (must/medium):** in PatchForInstall, also patch
-`LC_BUILD_VERSION.minos` (and any `LC_VERSION_MIN_IPHONEOS`) down to the device
-iOS, for the main executable and every nested Mach-O (frameworks, PlugIns/*.appex,
-Extensions/*.appex). Load commands live before cryptoff, so they're in the
-unencrypted header and safe to rewrite. Then SpringBoard should launch the app,
-the SBS path's dyld-patch decrypt should run, and all images should dump.
-Confirm by re-running the Frida SBS trace (process should appear) and scanning
-the output (0 encrypted).
+**Result on the device:** YouTube 21.41.5 (min iOS 17) on iOS 16.5.1 now
+launches via SBS and decrypts 7 of 8 Mach-Os (main binary 180 MB, widevine
+framework, 5 extensions).
 
-## Update: min-OS patch tested, did NOT fix it (2026-10-18)
+**Corrections to earlier notes:** the Mach-O min-OS was NOT the gate (that
+patch was tested, didn't help, and was reverted), and the ptrace fallback is
+NOT structurally broken -- with a license present it decrypts extensions fine.
+The decrypt engine was never the problem; korboy's approach does handle
+higher-iOS apps, as the user said.
 
-Implemented Mach-O LC_BUILD_VERSION/LC_VERSION_MIN patching (main exec + all
-nested Mach-Os) and tested it on YouTube (min iOS 17) on this device:
-- The patcher works (verified: 7 binaries lowered to 16.5.1, platform field
-  preserved, unit-tested).
-- But after installing the patched IPA, **SpringBoard still returns success
-  from SBSLaunchApplicationWithIdentifier and spawns no usable process** --
-  the helper still falls to the ptrace path and decrypts 1/8.
-- So the Mach-O min-OS is NOT the gate (or not the only one). Reverted the
-  patch (commit abe5073, reverted by 1f42e46) because it rewrites the binary,
-  which can invalidate the code signature, and it provided no benefit.
+**Remaining, minor:** `Extensions/AppMigrationExtension.appex` stays
+encrypted. It is built for iOS 26.1 (minos 26.1), uses the iOS-26-only
+`com.apple.app-migration` extension point and links AppMigrationKit, so it
+can't run on iOS 16.5.1 and goes through the ptrace path without dyld
+patches. On iOS 16 that extension point doesn't exist, so it would never run.
+Unverified whether korboy's original decrypted such extensions.
+- Possible QoL: report it as "skipped: requires iOS 26" instead of a generic
+  verify failure, or offer to strip extensions the device can't run.
 
-Deeper findings to pursue:
-- idevicesyslog during the attempt shows the spawned target "flagged as
-  pending exit for reason: launch failed" then immediate exit -- the app never
-  runs, so its __TEXT never gets FairPlay-decrypted in memory.
-- The helper's ptrace fallback is structurally broken here: it calls
-  `vm_read` at the SAME fixed address (0x104768000) for every target process,
-  not each image's real base, so it always fails KERN_INVALID_ADDRESS. That
-  path can only ever return the main image if it happens to be mapped (it got
-  IntentsExtension once, nothing else).
-- Full decrypt requires actually RUNNING the app (so the kernel decrypts its
-  pages). The SBS-launch path is the only one that runs+patches the app, and
-  it is refused for these apps on this A16 / iOS 16.5.1 device.
-
-Open question for the user: has a FULL decrypt of a higher-iOS app ever
-succeeded on THIS device, and with which tool? aayy-dev/TrollDecryptJB-rootless
-and aayy-dev/iDecrypt launch via launchd/RunningBoard rather than SBS+ptrace;
-if that mechanism works here, it should replace the helper's launch strategy.
+**Also seen:** the first download progress event reported total="40" for a
+268 MB IPA, so the app's download percentage may be wrong. To check.
 
