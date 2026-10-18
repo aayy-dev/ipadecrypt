@@ -248,22 +248,32 @@ Retire the native/fast tests (auth_endpoint_test.go, login_test.go:27-72@51ed4f3
   addresses: App Store sign-in cannot succeed: the authenticate request is unsigned; Errors are vague and the cause is hidden or never logged; No storage management, and a failed patch poisons the cache
   notes: The investigators already wrote throwaway versions of these tests (zz_trace_test.go and the ipatool wire tests), so this is mostly turning them into permanent files. Run them with HTTPS_PROXY=127.0.0.1:9 so they can't reach Apple.
 
-## Verified on the device (2026-10-18)
+## Verified on the device via Frida (2026-10-18)
 
-- **NOT a regression: apps that can't launch on this iOS can't be fully
-  decrypted.** Claude 1.261016.20 (links iOS 18 frameworks) on iOS 16.5.1
-  decrypted only the parts that loaded; the main binary, LinkKit.framework and
-  four app extensions kept cryptid 1. **korboy's own released helper.arm64
-  (md5 252fdad, byte-identical to what this fork ships) produces the exact same
-  6-still-encrypted result**, so this is inherent to launch-based FairPlay
-  decryption, not something this fork changed. Mechanism: SpringBoard won't
-  launch the build (`SBS launch produced no pid`), so there's no running
-  process to dump; patching MinimumOSVersion lets it install but not run.
-  - The app DOES catch this: the appstore-helper's verify step logs
-    `N binary(ies) still have cryptid != 0` and exits 30. So "partial decrypt
-    reported as success" was wrong at the app level; only the raw helper
-    returns 0.
-  - Possible QoL (should/medium): before downloading, warn when a build's
-    MinimumOSVersion exceeds the device iOS and the build won't launch; steer
-    to the version picker or "Latest iOS-compatible". Leave a non-launchable
-    install removable.
+**Root cause of partial decrypts of higher-iOS apps: SpringBoard won't launch
+them, because only the Info.plist min-OS is patched, not the Mach-O's.**
+
+Traced with super-trouper: spawned helper.arm64 suspended, hooked dlsym ->
+SBSLaunchApplicationWithIdentifier, resumed.
+- `SBSLaunchApplicationWithIdentifier("com.google.ios.youtube", suspended=1)`
+  returns **rc=0 but spawns no process** (polled ~2s, none appeared).
+- The installed YouTube: Info.plist MinimumOSVersion = 16.5.1 (patched), but
+  the Mach-O `LC_BUILD_VERSION minos = 17.0`. Device is 16.5.1.
+- SpringBoard gates on the binary's minos, not Info.plist, so it silently
+  declines. The helper's find-pid loop fails -> ptrace fallback (7
+  PT_ATTACHEXC spawns) -> "main only, no framework enumeration" -> 7/8 stay
+  encrypted.
+- `internal/pipeline/patch.go` `PatchForInstall` only rewrites Info.plist
+  MinimumOSVersion. **Neither korboy nor londek patches the Mach-O min-OS**, and
+  korboy's released helper reproduces the same partial result here. So this is
+  a pre-existing gap on this device (A16 / iOS 16.5.1), independent of the
+  sign-in/download fix.
+
+**Fix to implement and validate (must/medium):** in PatchForInstall, also patch
+`LC_BUILD_VERSION.minos` (and any `LC_VERSION_MIN_IPHONEOS`) down to the device
+iOS, for the main executable and every nested Mach-O (frameworks, PlugIns/*.appex,
+Extensions/*.appex). Load commands live before cryptoff, so they're in the
+unencrypted header and safe to rewrite. Then SpringBoard should launch the app,
+the SBS path's dyld-patch decrypt should run, and all images should dump.
+Confirm by re-running the Frida SBS trace (process should appear) and scanning
+the output (0 encrypted).
