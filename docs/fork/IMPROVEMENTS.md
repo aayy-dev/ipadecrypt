@@ -247,3 +247,32 @@ Device checks:
 Retire the native/fast tests (auth_endpoint_test.go, login_test.go:27-72@51ed4f3). Make CI fail if a committed helper binary differs from the CI build.
   addresses: App Store sign-in cannot succeed: the authenticate request is unsigned; Errors are vague and the cause is hidden or never logged; No storage management, and a failed patch poisons the cache
   notes: The investigators already wrote throwaway versions of these tests (zz_trace_test.go and the ipatool wire tests), so this is mostly turning them into permanent files. Run them with HTTPS_PROXY=127.0.0.1:9 so they can't reach Apple.
+
+## Found on the device (2026-10-18)
+
+- [major] **A partial decrypt is reported as success.** Claude 1.261016.20
+  (requires iOS 18.0) on iOS 16.5.1 produced an IPA in which the main binary,
+  LinkKit.framework and four extensions still had cryptid 1, yet the helper
+  exited 0 with `done`.
+  - Why: helper/decrypt.c:111-125, where the ptrace path returns 0 after a
+    failed `vm_read`. Nothing checks cryptid before reporting success.
+  - Fix (must/small): verify every Mach-O in the output, and fail with
+    exit 31 and the list of still-encrypted images.
+- [major] **Apps that need a newer iOS can't be decrypted on this device.**
+  - The app patches MinimumOSVersion (18.0 → 16.5.1) so appinst installs the
+    build, then:
+    - `SBSLaunchApplicationWithIdentifier` gets no pid within 2 s
+      (helper/spawn.c:177-184);
+    - the ptrace fallback skips the dyld patch and frameworks
+      (decrypt.c:111) and fails `vm_read` with KERN_INVALID_ADDRESS (kr=2).
+  - The failing address was identical for every process in a run
+    (0x104dac000 in one run, 0x100f9c000 in the next), so the ptrace path's
+    address calculation looks wrong.
+  - Fix (should/medium): debug the SBS launch with Frida on
+    SpringBoard/runningboardd; fix the ptrace address calculation.
+  - Until then, before downloading, warn when the build's MinimumOSVersion
+    is above the device's iOS, and offer "Latest iOS-compatible" or the
+    version picker.
+- [minor] **Installing over an incompatible build leaves an app that can't
+  launch** on the home screen. Offer to remove it, or install it only for
+  decrypting.
