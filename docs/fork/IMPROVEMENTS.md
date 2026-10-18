@@ -294,3 +294,33 @@ Unverified whether korboy's original decrypted such extensions.
 **Also seen:** the first download progress event reported total="40" for a
 268 MB IPA, so the app's download percentage may be wrong. To check.
 
+## Why YouTube left one binary encrypted but Claude didn't (verified 2026-10-18)
+
+The App Store "minimum iOS" is the MAIN APP's floor (YouTube 17.0, Claude
+18.0). It says nothing about individual bundled components. Per-binary
+LC_BUILD_VERSION min-OS, read from the decrypted IPAs:
+
+- Claude (all cryptid=0): main 18.0; extensions 18.0; Sentry.framework
+  **100.0**(!); LinkKit.framework 15.0.
+- YouTube: main 17.0; most extensions 17.0; widevine framework (none);
+  **AppMigrationExtension 26.1**.
+
+Two lessons:
+1. **min-OS alone isn't the gate.** Sentry is tagged min-OS 100.0 yet
+   decrypted fine, because a *framework* is loaded into the main app's
+   process: when the app runs (via SBS), dyld maps its frameworks and their
+   __TEXT faults in, so they decrypt regardless of their own min-OS.
+2. **Standalone extensions each need their own runnable process.** YouTube's
+   AppMigrationExtension is built for iOS 26.1 and links AppMigrationKit (an
+   iOS-26 framework absent on iOS 16) via the iOS-26-only
+   com.apple.app-migration extension point. Its process can't launch on iOS
+   16.5.1, so FairPlay never decrypts it. Everything else in YouTube (all
+   17.0) runs and decrypts.
+
+So it's not "YouTube needs a higher iOS than Claude." YouTube ships one
+forward-compat extension built far ahead (26.1, higher than anything in
+Claude), dormant until iOS 26. The verify step now reports exactly that
+("requires iOS 26.1") as a skip, not a failure. The skip heuristic is safe
+because it only examines binaries that are still encrypted — a high-min-OS
+framework like Sentry that decrypted normally is never flagged.
+
