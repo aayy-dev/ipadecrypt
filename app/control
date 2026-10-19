@@ -7,6 +7,5 @@ Maintainer: aayy-dev <275768457+aayy-dev@users.noreply.github.com>
 Author: londek, Korboy, aayy-dev
 Section: Applications
 Homepage: https://github.com/aayy-dev/ipadecrypt
-Depends: com.linusyang.appinst
 Conflicts: com.korboy.ipadecrypt, com.korboy.ipadecrypt-app
 Replaces: com.korboy.ipadecrypt, com.korboy.ipadecrypt-app
