@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build a static, iOS-patched Unicorn for appstore-helper and print the path
 # of libunicorn.a. App Store sign-in needs it: ipatool signs sign-in requests
-# by running Apple's x86_64 FairPlay code in Unicorn, which purego finds
+# by running Apple's arm64 FairPlay code in Unicorn, which purego finds
 # through dlsym in the helper itself (so it must be force-loaded and its
 # symbols exported). This mirrors majd/ipatool's tools/build-ios.sh.
 #
@@ -34,7 +34,7 @@ if [ ! -f "$LIB" ]; then
     -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT="$SDKROOT" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
     -DCMAKE_C_FLAGS='-target arm64-apple-ios15.0' -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_SHARED_LIBS=OFF -DUNICORN_ARCH=x86 -DUNICORN_BUILD_TESTS=OFF -DUNICORN_INSTALL=OFF >&2
+    -DBUILD_SHARED_LIBS=OFF -DUNICORN_ARCH=aarch64 -DUNICORN_BUILD_TESTS=OFF -DUNICORN_INSTALL=OFF >&2
   cmake --build "$OUT/build" --parallel "$(sysctl -n hw.ncpu)" >&2
 fi
 

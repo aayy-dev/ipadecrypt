@@ -37,6 +37,9 @@ type installedApp struct {
 }
 
 func main() {
+	// Allow the bundled ipatool SAP emulator to JIT on jailbroken iOS 26.
+	enableJIT()
+
 	var bundleID, trackID, email, password, authCode string
 	var verifyIPA string
 	var listVersions bool
