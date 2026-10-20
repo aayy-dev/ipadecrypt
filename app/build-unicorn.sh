@@ -27,7 +27,19 @@ if [ ! -f "$LIB" ]; then
   curl -fsSL --retry 3 "https://github.com/unicorn-engine/unicorn/archive/refs/tags/$VERSION.tar.gz" -o "$OUT/unicorn.tar.gz"
   echo "$SHA256  $OUT/unicorn.tar.gz" | shasum -a 256 -c - >&2
   tar -xzf "$OUT/unicorn.tar.gz" -C "$OUT"
-  patch -s -d "$OUT/unicorn-$VERSION" -p1 < patches/unicorn-ios.patch
+
+  # Single source of truth for the iOS Unicorn patch: ipatool's own copy,
+  # resolved through the Go module graph. go.mod has
+  # "replace github.com/majd/ipatool/v2 => ../ipatool-fork", so local fork edits
+  # are picked up with no second copy to maintain; a versioned dependency would
+  # resolve to the module cache instead. Keep VERSION/SHA256 above in sync with
+  # that fork's internal/sap/unicorn/artifact.go.
+  GO="${GO:-go}"
+  command -v "$GO" >/dev/null 2>&1 || GO=/usr/local/go/bin/go
+  IPATOOL_DIR=$(cd .. && "$GO" list -m -f '{{.Dir}}' github.com/majd/ipatool/v2)
+  PATCH="$IPATOOL_DIR/tools/patches/unicorn-ios.patch"
+  [ -f "$PATCH" ] || { echo "ipatool unicorn patch not found at $PATCH" >&2; exit 1; }
+  patch -s -d "$OUT/unicorn-$VERSION" -p1 < "$PATCH"
 
   SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
   ARCHFLAGS='-arch arm64' cmake -S "$OUT/unicorn-$VERSION" -B "$OUT/build" \
