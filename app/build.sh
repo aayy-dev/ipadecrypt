@@ -78,6 +78,11 @@ ldid -Sdaemon.entitlements.plist layout/usr/libexec/ipadecryptd
 chmod +x layout/usr/libexec/ipadecryptd
 chmod +x layout/DEBIAN/postinst layout/DEBIAN/prerm
 
+# Keep the app bundle version in sync with control (single source of truth).
+VERSION=$(sed -n 's/^Version: //p' control)
+plutil -replace CFBundleShortVersionString -string "$VERSION" Resources/Info.plist
+plutil -replace CFBundleVersion -string "$VERSION" Resources/Info.plist
+
 THEOS="$THEOS" make package FINALPACKAGE=1
 
 PACKAGE=$(sed -n 's/^Package: //p' control)

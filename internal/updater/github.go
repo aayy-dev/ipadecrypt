@@ -10,7 +10,7 @@ import (
 	"golang.org/x/mod/semver"
 )
 
-const releasesURL = "https://api.github.com/repos/korboybeats/ipadecrypt/releases?per_page=30"
+const releasesURL = "https://api.github.com/repos/aayy-dev/ipadecrypt/releases?per_page=30"
 
 type Release struct {
 	Tag         string    `json:"tag_name"`

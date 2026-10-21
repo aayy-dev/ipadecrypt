@@ -423,13 +423,13 @@ func (r *doctorRun) autoalertChecks(dev *device.Client, jailbreak string) {
 
 func (r *doctorRun) appChecks(dev *device.Client) {
 	r.start("jailbreak app package")
-	out, _, code, _ := dev.RunSudo("dpkg -s com.korboy.ipadecrypt 2>/dev/null | grep -q '^Status: install ok installed' && echo yes")
+	out, _, code, _ := dev.RunSudo("dpkg -s dev.aayy.ipadecrypt 2>/dev/null | grep -q '^Status: install ok installed' && echo yes")
 	if code != 0 || strings.TrimSpace(out) != "yes" {
 		r.add(doctorCheck{
 			Status: doctorSkip,
 			Name:   "jailbreak app",
 			Detail: "app package not installed",
-			Hint:   "install com.korboy.ipadecrypt_0.0.1_iphoneos-arm64.deb if you use the app",
+			Hint:   "install the dev.aayy.ipadecrypt .deb if you use the app",
 		})
 		return
 	}

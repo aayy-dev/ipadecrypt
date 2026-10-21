@@ -10,7 +10,7 @@
 [![Linux](https://img.shields.io/badge/Linux-000?style=flat-square&logo=linux&logoColor=white)](#install)
 [![Windows](https://img.shields.io/badge/Windows-000?style=flat-square&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0wIDBoMTF2MTFIMHpNMTMgMGgxMXYxMUgxM3pNMCAxM2gxMXYxMUgwek0xMyAxM2gxMXYxMUgxM3oiLz48L3N2Zz4=)](#install)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](#license)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/londek/ipadecrypt/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](https://github.com/aayy-dev/ipadecrypt/pulls)
 
 <img width="90%" src="https://github.com/user-attachments/assets/ba8dbd32-a2fb-49cc-afee-3aa88050718e" />
 
@@ -78,7 +78,7 @@ Clone the fork:
 
 ```sh
 mkdir -p ~/ipadecrypt
-git clone https://github.com/korboybeats/ipadecrypt ~/ipadecrypt/src
+git clone https://github.com/aayy-dev/ipadecrypt ~/ipadecrypt/src
 cd ~/ipadecrypt/src
 ```
 
@@ -103,8 +103,8 @@ Refer to [BUILDING.md](BUILDING.md) for helper and release-style build details.
 The release includes `.deb` packages for the on-device app and the optional
 auto-confirm tweak:
 
-- `com.korboy.ipadecrypt_0.7.3-korboy.2_iphoneos-arm64.deb`
-- `com.korboy.ipadecrypt_0.7.3-korboy.2_iphoneos-arm64e.deb` for RootHide
+- `dev.aayy.ipadecrypt_0.7.3_iphoneos-arm64.deb`
+- `dev.aayy.ipadecrypt_0.7.3_iphoneos-arm64e.deb` for RootHide
 - `com.korboy.ipadecryptautoalert_0.7.3-korboy.2_iphoneos-arm64.deb`
 - `com.korboy.ipadecryptautoalert_0.7.3-korboy.2_iphoneos-arm64e.deb` for RootHide
 
@@ -115,7 +115,7 @@ To build and install the rootless app locally:
 ```
 
 The script builds the app, app-store helper, and daemon, installs the package
-on the phone, refreshes uicache, and opens `com.korboy.ipadecrypt`.
+on the phone, refreshes uicache, and opens `dev.aayy.ipadecrypt`.
 
 To build the RootHide app package and upload it to the phone's Downloads
 folder:
